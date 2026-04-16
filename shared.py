@@ -152,10 +152,16 @@ def load_data():
     creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
     client = gspread.authorize(creds)
     sheet = client.open(SHEET_NAME).sheet1
-    data = sheet.get_all_records()
-    if not data:
+    all_values = sheet.get_all_values()
+    if not all_values or len(all_values) < 2:
         return pd.DataFrame()
-    df = pd.DataFrame(data)
+    headers = all_values[0]
+    rows = all_values[1:]
+    # Pad rows that are shorter than the header
+    padded = [r + [""] * (len(headers) - len(r)) for r in rows]
+    df = pd.DataFrame(padded, columns=headers)
+    # Drop completely empty rows
+    df = df[df["event_name"].str.strip() != ""]
     for col in ["event_start", "event_end", "acc_start", "acc_end", "cut_off_date"]:
         if col in df.columns:
             df[col] = pd.to_datetime(df[col], errors="coerce")
