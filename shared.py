@@ -564,27 +564,30 @@ def render_event_form(prefix="", submit_label="💾 Save Event"):
     st.divider()
 
     # Submit
-    if st.button(submit_label, type="primary", use_container_width=True,
-                 key=f"{prefix}submit_btn"):
-        errors = []
-        if not st.session_state.get(f"{prefix}submitted_by", "").strip():
-            errors.append("Το όνομά σου είναι υποχρεωτικό.")
-        if not st.session_state.get(f"{prefix}event_name", "").strip():
-            errors.append("Το όνομα του event είναι υποχρεωτικό.")
-        if errors:
-            for e in errors:
-                st.error(e)
-            return False
+    col1, col2, col3 = st.columns(3)
 
-        with st.spinner("Αποθήκευση..."):
-            try:
-                _save_from_state(prefix, incl_acc, incl_spaces)
-                return True
-            except Exception as e:
-                st.error(f"❌ Σφάλμα: {e}")
+    with col2:
+        if st.button(submit_label, type="primary", use_container_width=True,
+                    key=f"{prefix}submit_btn"):
+            errors = []
+            if not st.session_state.get(f"{prefix}submitted_by", "").strip():
+                errors.append("Το όνομά σου είναι υποχρεωτικό.")
+            if not st.session_state.get(f"{prefix}event_name", "").strip():
+                errors.append("Το όνομα του event είναι υποχρεωτικό.")
+            if errors:
+                for e in errors:
+                    st.error(e)
                 return False
 
-    return False
+            with st.spinner("Αποθήκευση..."):
+                try:
+                    _save_from_state(prefix, incl_acc, incl_spaces)
+                    return True
+                except Exception as e:
+                    st.error(f"❌ Σφάλμα: {e}")
+                    return False
+
+        return False
 
 
 # ─────────────────────────────────────────────
