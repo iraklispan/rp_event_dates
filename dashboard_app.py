@@ -226,7 +226,6 @@ def generate_printable_html(event_row, rooms_df, spaces_list, color):
 # CLIENT CARD
 # ─────────────────────────────────────────────
 def render_client_card(event_row, rooms_df, spaces_list, color, row_idx):
-    st.markdown("<br>", unsafe_allow_html=True)
     st.markdown(
         f"""<div style="border-left:5px solid {color};padding:0.6rem 1.2rem;
         background:#f8fafc;border-radius:8px;margin-bottom:1rem;">
@@ -606,6 +605,8 @@ def main():
             if editing and editing == selected_row["event_name"]:
                 render_edit_card(editing)
             else:
+                st.markdown("<br>", unsafe_allow_html=True)    
+                st.markdown("<br>", unsafe_allow_html=True)
                 render_client_card(selected_row, ev_rooms_df, ev_spaces,
                                    color, selected_idx)
 
