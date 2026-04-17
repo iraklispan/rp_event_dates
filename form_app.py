@@ -8,9 +8,9 @@ from shared import render_event_form
 
 def main():
     st.set_page_config(
-        page_title="Groups & Conferences — New Event",
+        page_title="Register Event",
         page_icon="📋",
-        layout="wide",
+        layout="None",
     )
     st.title("📋 New Group / Conference Event")
 
