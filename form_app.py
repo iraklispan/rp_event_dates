@@ -12,7 +12,7 @@ def main():
         page_icon="📋",
         layout="wide",
     )
-    st.title("📋 New Group / Conference Event")
+    st.title("📋 Register Event")
 
     success = render_event_form(prefix="form_", submit_label="💾 Save Event")
 

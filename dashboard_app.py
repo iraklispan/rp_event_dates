@@ -385,32 +385,20 @@ def render_edit_card(event_name):
 # ─────────────────────────────────────────────
 # GANTT
 # ─────────────────────────────────────────────
-def render_gantt(df_all, rooms_df, spaces_df):
+def render_gantt(df_plot, rooms_df, spaces_df, selected_year):
     import plotly.express as px
-    import calendar
 
-    df_valid = df_all.dropna(subset=["event_start", "event_end"]).copy()
-    if df_valid.empty:
-        st.info("Δεν υπάρχουν events με έγκυρες ημερομηνίες.")
-        return
-
-    # ── Year filter ───────────────────────────
-    available_years = sorted(df_valid["event_start"].dt.year.unique().tolist())
-    selected_year = st.selectbox(
-        "📅 Έτος", available_years,
-        index=len(available_years) - 1,
-        key="gantt_year",
-    )
-
-    df_plot = (
-        df_valid[df_valid["event_start"].dt.year == selected_year]
-        .sort_values("event_start")
-        .reset_index(drop=True)
-    )
+    # Αφαιρούμε events που ίσως δεν έχουν σωστές ημερομηνίες
+    df_plot = df_plot.dropna(subset=["event_start", "event_end"]).copy()
 
     if df_plot.empty:
-        st.info(f"Δεν υπάρχουν events για το {selected_year}.")
+        st.info(f"Δεν υπάρχουν events με έγκυρες ημερομηνίες για το {selected_year}.")
         return
+
+    # Build records
+    records = []
+    for idx, row in df_plot.iterrows():
+        eid  = row["event_id"]
 
     # Build records
     records = []
@@ -488,7 +476,7 @@ def render_gantt(df_all, rooms_df, spaces_df):
         bargroupgap=0.0,
         showlegend=False,
         title=dict(
-            text=f"Groups & Conferences — {selected_year}",
+            text=f"Events | {selected_year}",
             font=dict(size=18),
         ),
         dragmode="zoom",               # <-- Αυτόματο zoom με το drag!
@@ -521,11 +509,11 @@ def render_gantt(df_all, rooms_df, spaces_df):
 # ─────────────────────────────────────────────
 def main():
     st.set_page_config(
-        page_title="Groups & Conferences — Dashboard",
+        page_title="Event Dashboard",
         page_icon="📊",
         layout="wide",
     )
-    st.title("📊 Groups & Conferences Dashboard")
+    st.title("📊 Event Dashboard")
 
     if "editing_event" not in st.session_state:
         st.session_state["editing_event"] = None
@@ -613,7 +601,8 @@ def main():
 
     # ── TAB 2 ─────────────────────────────────
     with tab2:
-        render_gantt(events_df, rooms_df, spaces_df)
+        # Περνάμε το df_year (που είναι ήδη φιλτραρισμένο) και το selected_year
+        render_gantt(df_year, rooms_df, spaces_df, selected_year)
 
 
 if __name__ == "__main__":
