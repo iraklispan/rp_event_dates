@@ -594,6 +594,9 @@ def main():
 
         if selected_idx is not None:
             st.divider()
+            st.markdown("<br>", unsafe_allow_html=True)
+            st.markdown("<br>", unsafe_allow_html=True)
+            st.markdown("<br>", unsafe_allow_html=True)
             st.subheader("📄 Client Card")
             selected_row  = df_year.loc[selected_idx]
             color         = event_color(selected_idx)
@@ -605,8 +608,6 @@ def main():
             if editing and editing == selected_row["event_name"]:
                 render_edit_card(editing)
             else:
-                st.markdown("<br>", unsafe_allow_html=True)    
-                st.markdown("<br>", unsafe_allow_html=True)
                 render_client_card(selected_row, ev_rooms_df, ev_spaces,
                                    color, selected_idx)
 
