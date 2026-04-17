@@ -249,7 +249,7 @@ def render_gantt(df_all, rooms_df, spaces_df):
     )
 
     fig.update_layout(
-        height=max(400, len(df_plot) * 40),
+        height=max(500, len(df_plot) * 40),
         plot_bgcolor="white",
         paper_bgcolor="white",
         margin=dict(l=20, r=20, t=60, b=40),
