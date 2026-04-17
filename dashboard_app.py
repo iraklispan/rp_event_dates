@@ -253,7 +253,7 @@ def render_gantt(df_all, rooms_df, spaces_df):
         plot_bgcolor="white",
         paper_bgcolor="white",
         margin=dict(l=20, r=20, t=60, b=40),
-        bargap=0.1,                    # <-- Απόσταση ανάμεσα στα bars ακριβώς στο 0.1
+        bargap=0,                    # <-- Απόσταση ανάμεσα στα bars ακριβώς στο 0.1
         bargroupgap=0.0,
         showlegend=False,
         title=dict(
