@@ -545,7 +545,7 @@ def main():
 
     # ── TAB 1 ─────────────────────────────────
     with tab1:
-        st.subheader(f"Events {selected_year}  —  {len(df_year)} total")
+        st.subheader(f"Events | {selected_year} | {len(df_year)} total")
 
         hcols = st.columns([0.4, 0.2, 3, 1.5, 1.5, 1, 1.2, 1, 1])
         for col, label in zip(hcols[2:],
