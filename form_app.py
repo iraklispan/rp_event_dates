@@ -10,7 +10,7 @@ def main():
     st.set_page_config(
         page_title="Register Event",
         page_icon="📋",
-        layout="None",
+        layout="wide",
     )
     st.title("📋 New Group / Conference Event")
 
