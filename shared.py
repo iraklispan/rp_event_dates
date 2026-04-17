@@ -498,11 +498,26 @@ def render_event_form(prefix="", submit_label="💾 Save Event"):
     incl_acc = st.toggle("Includes Accommodation",
                          key=f"{prefix}includes_accommodation")
     if incl_acc:
-        c1, c2 = st.columns(2)
-        with c1:
-            st.date_input("Check-in Date",  key=f"{prefix}acc_start")
-        with c2:
-            st.date_input("Check-out Date", key=f"{prefix}acc_end")
+        same_dates = st.toggle(
+            "Same dates as the event",
+            value=True,
+            key=f"{prefix}acc_same_dates",
+        )
+        if not same_dates:
+            c1, c2 = st.columns(2)
+            with c1:
+                st.date_input("Check-in Date",  key=f"{prefix}acc_start")
+            with c2:
+                st.date_input("Check-out Date", key=f"{prefix}acc_end")
+        else:
+            # Mirror event dates silently
+            st.session_state[f"{prefix}acc_start"] = st.session_state.get(f"{prefix}event_start")
+            st.session_state[f"{prefix}acc_end"]   = st.session_state.get(f"{prefix}event_end")
+            c1, c2 = st.columns(2)
+            with c1:
+                st.date_input("Check-in Date",  key=f"{prefix}acc_start", disabled=True)
+            with c2:
+                st.date_input("Check-out Date", key=f"{prefix}acc_end",   disabled=True)
 
         st.markdown("#### Room Types")
         for i in range(1, st.session_state[f"{prefix}num_rooms"] + 1):
