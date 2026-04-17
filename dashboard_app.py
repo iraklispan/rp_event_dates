@@ -222,12 +222,23 @@ def render_gantt(df_year, rooms_df, spaces_df, year):
             gridcolor="#e2e8f0",
             gridwidth=1,
             minor=dict(
-                dtick=7 * 24 * 60 * 60 * 1000,  # weekly minor ticks in ms
+                dtick=24 * 60 * 60 * 1000,  # daily minor ticks in ms
                 showgrid=True,
-                gridcolor="#f1f5f9",
+                gridcolor="#f8fafc",
                 gridwidth=1,
             ),
+            rangeslider=dict(visible=False),
             tickfont=dict(size=12),
+            # Auto-format: shows month when zoomed out, day number when zoomed in
+            tickformatstops=[
+                dict(dtickrange=[None, 7 * 24 * 60 * 60 * 1000],
+                     value="%d"),                          # day number only
+                dict(dtickrange=[7 * 24 * 60 * 60 * 1000,
+                                 31 * 24 * 60 * 60 * 1000],
+                     value="%d %b"),                       # day + month
+                dict(dtickrange=[31 * 24 * 60 * 60 * 1000, None],
+                     value="%b"),                          # month only
+            ],
         ),
         yaxis=dict(
             tickfont=dict(size=12),
