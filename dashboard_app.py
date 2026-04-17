@@ -58,13 +58,14 @@ def render_client_card(event_row, rooms_df, spaces_list, color, row_idx):
 
     # General
     with st.expander("📌 General Information", expanded=True):
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Start", event_row["event_start"].strftime("%d/%m/%Y")
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c1.metric("Type", event_row.get("event_type") or "—")
+        c2.metric("Start", event_row["event_start"].strftime("%d/%m/%Y")
                   if pd.notna(event_row["event_start"]) else "—")
-        c2.metric("End", event_row["event_end"].strftime("%d/%m/%Y")
+        c3.metric("End", event_row["event_end"].strftime("%d/%m/%Y")
                   if pd.notna(event_row["event_end"]) else "—")
-        c3.metric("Duration", f"{num_days(event_row)} nights")
-        c4.metric("Attendees", int(event_row.get("attendees", 0) or 0))
+        c4.metric("Duration", f"{num_days(event_row)} nights")
+        c5.metric("Attendees", int(event_row.get("attendees", 0) or 0))
 
     # Accommodation
     if str(event_row.get("includes_accommodation", "")).lower() == "true":
@@ -154,6 +155,8 @@ def render_edit_card(event_name):
 # GANTT
 # ─────────────────────────────────────────────
 def render_gantt(df_year, rooms_df, spaces_df, year):
+    import plotly.express as px
+
     df_plot = (
         df_year
         .dropna(subset=["event_start", "event_end"])
@@ -164,65 +167,97 @@ def render_gantt(df_year, rooms_df, spaces_df, year):
         st.info("Δεν υπάρχουν events με έγκυρες ημερομηνίες.")
         return
 
-    fig = go.Figure()
+    # Build records for px.timeline
+    records = []
     for idx, row in df_plot.iterrows():
-        color  = event_color(idx)
-        start  = row["event_start"]
-        end    = row["event_end"]
-        days   = (end - start).days or 1
-        eid    = row["event_id"]
+        eid  = row["event_id"]
+        days = (row["event_end"] - row["event_start"]).days or 1
+        records.append({
+            "Event":     row["event_name"],
+            "Type":      row.get("event_type", ""),
+            "Start":     row["event_start"],
+            "End":       row["event_end"],
+            "Attendees": int(row.get("attendees", 0) or 0),
+            "Nights":    days,
+            "Rooms":     count_rooms_from_df(rooms_df, eid),
+            "Spaces":    count_spaces_from_df(spaces_df, eid),
+            "Color":     event_color(idx),
+        })
 
-        hover = (
-            f"<b>{row['event_name']}</b><br>"
-            f"📅 {start.strftime('%d/%m/%Y')} → {end.strftime('%d/%m/%Y')}<br>"
-            f"🌙 {days} nights<br>"
-            f"👥 {int(row.get('attendees', 0) or 0)} attendees<br>"
-            f"🛏️ {count_rooms_from_df(rooms_df, eid)} rooms | "
-            f"🏛️ {count_spaces_from_df(spaces_df, eid)} spaces"
-        )
+    df_gantt = pd.DataFrame(records)
 
-        fig.add_trace(go.Bar(
-            x=[days],
-            y=[row["event_name"]],
-            base=[start.timestamp() * 1000],
-            orientation="h",
-            marker_color=color,
-            marker_line_color="white",
-            marker_line_width=1.5,
-            hovertemplate=hover + "<extra></extra>",
-            showlegend=False,
-        ))
+    fig = px.timeline(
+        df_gantt,
+        x_start="Start",
+        x_end="End",
+        y="Event",
+        color="Event",
+        color_discrete_sequence=df_gantt["Color"].tolist(),
+        hover_data={
+            "Event": True,
+            "Type": True,
+            "Nights": True,
+            "Attendees": True,
+            "Rooms": True,
+            "Spaces": True,
+            "Start": "|%d/%m/%Y",
+            "End":   "|%d/%m/%Y",
+            "Color": False,
+        },
+    )
 
-        mid = (start.timestamp() + (end.timestamp() - start.timestamp()) / 2) * 1000
-        fig.add_annotation(
-            x=mid, y=row["event_name"],
-            text=row["event_name"] if days > 3 else "",
-            showarrow=False,
-            font=dict(color="white", size=11, family="Arial Bold"),
-            xref="x", yref="y",
-        )
+    fig.update_yaxes(autorange="reversed")
 
     fig.update_layout(
-        height=max(400, len(df_plot) * 50),
+        height=max(450, len(df_plot) * 52),
         xaxis=dict(
-            type="date",
             range=[
-                datetime(year, 1, 1).timestamp() * 1000,
-                datetime(year, 12, 31).timestamp() * 1000,
+                f"{year}-01-01",
+                f"{year}-12-31",
             ],
-            tickformat="%b",
+            tickformat="%d %b",
             dtick="M1",
+            ticklabelmode="period",
             showgrid=True,
             gridcolor="#e2e8f0",
+            gridwidth=1,
+            minor=dict(
+                dtick=7 * 24 * 60 * 60 * 1000,  # weekly minor ticks in ms
+                showgrid=True,
+                gridcolor="#f1f5f9",
+                gridwidth=1,
+            ),
             tickfont=dict(size=12),
         ),
-        yaxis=dict(autorange="reversed", tickfont=dict(size=12)),
+        yaxis=dict(
+            tickfont=dict(size=12),
+            title="",
+        ),
         plot_bgcolor="white",
         paper_bgcolor="white",
-        margin=dict(l=220, r=30, t=50, b=40),
-        bargap=0.35,
-        title=dict(text=f"Groups & Conferences — {year}", font=dict(size=18)),
+        margin=dict(l=20, r=20, t=50, b=40),
+        bargap=0.25,
+        showlegend=False,
+        title=dict(
+            text=f"Groups & Conferences — {year}",
+            font=dict(size=18),
+        ),
     )
+
+    # Add event name labels inside bars
+    for idx, row in df_gantt.iterrows():
+        days = row["Nights"]
+        mid  = row["Start"] + (row["End"] - row["Start"]) / 2
+        fig.add_annotation(
+            x=mid,
+            y=row["Event"],
+            text=row["Event"] if days >= 3 else "",
+            showarrow=False,
+            font=dict(color="white", size=10, family="Arial Bold"),
+            xref="x",
+            yref="y",
+        )
+
     st.plotly_chart(fig, use_container_width=True)
 
 
