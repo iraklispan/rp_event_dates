@@ -155,7 +155,8 @@ def render_edit_card(event_name):
 # GANTT
 # ─────────────────────────────────────────────
 def render_gantt(df_all, rooms_df, spaces_df):
-    from streamlit_echarts import st_echarts
+    import plotly.express as px
+    import calendar
 
     df_valid = df_all.dropna(subset=["event_start", "event_end"]).copy()
     if df_valid.empty:
@@ -180,190 +181,104 @@ def render_gantt(df_all, rooms_df, spaces_df):
         st.info(f"Δεν υπάρχουν events για το {selected_year}.")
         return
 
-    # ── Epoch ms helpers ──────────────────────
-    def to_ms(dt):
-        return int(dt.timestamp() * 1000)
-
-    year_start_ms = to_ms(pd.Timestamp(f"{selected_year}-01-01"))
-    year_end_ms   = to_ms(pd.Timestamp(f"{selected_year}-12-31"))
-    mar_ms        = to_ms(pd.Timestamp(f"{selected_year}-03-01"))
-    oct_ms        = to_ms(pd.Timestamp(f"{selected_year}-10-31"))
-
-    # ── Gantt με δύο stacked bars ανά event ──
-    # Bar 1 (transparent): από epoch 0 μέχρι event_start  → "offset"
-    # Bar 2 (colored):     από event_start μέχρι event_end → "duration"
-    event_names = df_plot["event_name"].tolist()
-
-    offset_data   = []
-    duration_data = []
-
+    # Build records
+    records = []
     for idx, row in df_plot.iterrows():
-        color  = event_color(idx)
-        start  = to_ms(row["event_start"])
-        end    = to_ms(row["event_end"])
-        dur    = end - start
-        nights = (row["event_end"] - row["event_start"]).days or 1
-        eid    = row["event_id"]
-
-        offset_data.append({
-            "value": start,
-            "itemStyle": {"color": "transparent", "borderColor": "transparent"},
-        })
-        duration_data.append({
-            "value": dur,
-            "itemStyle": {"color": color, "borderRadius": [0, 4, 4, 0]},
-            "tooltip_extra": {
-                "name":      row["event_name"],
-                "type":      row.get("event_type", "—"),
-                "start_str": row["event_start"].strftime("%d/%m/%Y"),
-                "end_str":   row["event_end"].strftime("%d/%m/%Y"),
-                "nights":    nights,
-                "attendees": int(row.get("attendees", 0) or 0),
-                "rooms":     count_rooms_from_df(rooms_df, eid),
-                "spaces":    count_spaces_from_df(spaces_df, eid),
-            },
+        eid  = row["event_id"]
+        days = (row["event_end"] - row["event_start"]).days or 1
+        records.append({
+            "Event":     row["event_name"],
+            "Type":      row.get("event_type", ""),
+            "Start":     row["event_start"],
+            "Finish":    row["event_end"],
+            "Attendees": int(row.get("attendees", 0) or 0),
+            "Nights":    days,
+            "Rooms":     count_rooms_from_df(rooms_df, eid),
+            "Spaces":    count_spaces_from_df(spaces_df, eid),
+            "Color":     event_color(idx),
         })
 
-    # Το tooltip χρειάζεται τα δεδομένα μέσα στο value array
-    # Χρησιμοποιούμε το name field για tooltip display
-    duration_data_clean = []
-    for idx, (row_data, row) in enumerate(zip(duration_data, df_plot.itertuples())):
-        nights = (row.event_end - row.event_start).days or 1
-        eid    = row.event_id
-        duration_data_clean.append({
-            "value": row_data["value"],
-            "itemStyle": row_data["itemStyle"],
-            "name": (
-                f"{row.event_name}|"
-                f"{row.event_start.strftime('%d/%m/%Y')}|"
-                f"{row.event_end.strftime('%d/%m/%Y')}|"
-                f"{getattr(row, 'event_type', '—')}|"
-                f"{nights}|"
-                f"{int(getattr(row, 'attendees', 0) or 0)}|"
-                f"{count_rooms_from_df(rooms_df, eid)}|"
-                f"{count_spaces_from_df(spaces_df, eid)}"
-            ),
-        })
+    df_gantt = pd.DataFrame(records)
 
-    zoom_start_pct = round((mar_ms - year_start_ms) / (year_end_ms - year_start_ms) * 100)
-    zoom_end_pct   = round((oct_ms - year_start_ms) / (year_end_ms - year_start_ms) * 100)
+    fig = px.timeline(
+        df_gantt,
+        x_start="Start",
+        x_end="Finish",
+        y="Event",
+        color="Event",
+        color_discrete_sequence=df_gantt["Color"].tolist(),
+        custom_data=["Type", "Nights", "Attendees", "Rooms", "Spaces"],
+    )
 
-    option = {
-        "backgroundColor": "transparent",
-        "tooltip": {
-            "trigger": "item",
-            "formatter": (
-                "function(params) {"
-                "  if (params.seriesIndex === 0) return '';"  # κρύβουμε tooltip του offset
-                "  var parts = params.name.split('|');"
-                "  return '<b>' + parts[0] + '</b><br/>'"
-                "    + 'Τύπος: '  + parts[3] + '<br/>'"
-                "    + '📅 ' + parts[1] + ' → ' + parts[2] + '<br/>'"
-                "    + '🌙 ' + parts[4] + ' nights<br/>'"
-                "    + '👥 ' + parts[5] + ' attendees<br/>'"
-                "    + '🛏️ ' + parts[6] + ' rooms | 🏛️ ' + parts[7] + ' spaces';"
-                "}"
-            ),
-        },
-        "title": {
-            "text": f"Groups & Conferences — {selected_year}",
-            "textStyle": {"fontSize": 18, "fontWeight": "normal"},
-            "top": 10, "left": 10,
-        },
-        "grid": {
-            "top": 55, "bottom": 70,
-            "left": 200, "right": 20,
-            "containLabel": False,
-        },
-        "xAxis": {
-            "type": "value",
-            "min": year_start_ms,
-            "max": year_end_ms,
-            "axisLabel": {
-                "formatter": (
-                    "function(val) {"
-                    "  var d = new Date(val);"
-                    "  var months = ['Ιαν','Φεβ','Μαρ','Απρ','Μάι','Ιουν',"
-                    "               'Ιουλ','Αυγ','Σεπ','Οκτ','Νοε','Δεκ'];"
-                    "  if (d.getDate() <= 3) return months[d.getMonth()];"
-                    "  if (d.getDate() >= 13 && d.getDate() <= 17) return d.getDate();"
-                    "  return '';"
-                    "}"
-                ),
-                "fontSize": 11,
-                "color": "#475569",
-            },
-            "splitLine": {"show": True, "lineStyle": {"color": "#e2e8f0", "type": "dashed"}},
-            "axisLine":  {"lineStyle": {"color": "#cbd5e1"}},
-            "axisTick":  {"show": False},
-        },
-        "yAxis": {
-            "type": "category",
-            "data": list(reversed(event_names)),
-            "axisLabel": {
-                "fontSize": 12,
-                "color": "#1e293b",
-                "width": 185,
-                "overflow": "truncate",
-            },
-            "axisLine": {"show": False},
-            "axisTick": {"show": False},
-        },
-        "dataZoom": [
-            {
-                "type": "slider",
-                "xAxisIndex": 0,
-                "start": zoom_start_pct,
-                "end":   zoom_end_pct,
-                "height": 20,
-                "bottom": 15,
-                "fillerColor": "rgba(148,163,184,0.2)",
-                "borderColor": "#cbd5e1",
-                "handleStyle": {"color": "#64748b"},
-                "labelFormatter": (
-                    "function(val) {"
-                    "  var d = new Date(val);"
-                    "  var months = ['Ιαν','Φεβ','Μαρ','Απρ','Μάι','Ιουν',"
-                    "               'Ιουλ','Αυγ','Σεπ','Οκτ','Νοε','Δεκ'];"
-                    "  return months[d.getMonth()] + ' ' + d.getFullYear();"
-                    "}"
-                ),
-            },
-            {
-                "type": "inside",
-                "xAxisIndex": 0,
-                "start": zoom_start_pct,
-                "end":   zoom_end_pct,
-                "zoomOnMouseWheel": True,
-                "moveOnMouseMove": True,
-                "moveOnMouseWheel": False,
-            },
-        ],
-        "series": [
-            {
-                "type": "bar",
-                "stack": "gantt",
-                "barMaxWidth": 28,
-                "barCategoryGap": "10%",  # gap ανάμεσα στα events
-                "silent": True,           # δεν αλληλεπιδρά με mouse
-                "data": offset_data,
-                "emphasis": {"disabled": True},
-            },
-            {
-                "type": "bar",
-                "stack": "gantt",
-                "barMaxWidth": 28,
-                "barCategoryGap": "10%",
-                "data": duration_data_clean,
-                "emphasis": {
-                    "itemStyle": {"shadowBlur": 6, "shadowColor": "rgba(0,0,0,0.2)"}
-                },
-            },
-        ],
-    }
+    fig.update_traces(
+        hovertemplate=(
+            "<b>%{y}</b><br>"
+            "Type: %{customdata[0]}<br>"
+            "📅 %{base|%d/%m/%Y} → %{x|%d/%m/%Y}<br>"
+            "🌙 %{customdata[1]} nights<br>"
+            "👥 %{customdata[2]} attendees<br>"
+            "🛏️ %{customdata[3]} rooms | 🏛️ %{customdata[4]} spaces"
+            "<extra></extra>"
+        )
+    )
 
-    chart_height = max(400, len(df_plot) * 40 + 140)
-    st_echarts(option, height=f"{chart_height}px", key=f"gantt_{selected_year}")  
+    fig.update_yaxes(autorange="reversed", tickfont=dict(size=12), title="")
+
+    x_start = f"{selected_year}-03-01"
+    x_end   = f"{selected_year}-10-31"
+
+    fig.update_xaxes(
+        range=[x_start, x_end],
+        showgrid=True,
+        gridcolor="#e2e8f0",
+        gridwidth=1,
+        # Plotly επιλέγει αυτόματα dtick ανάλογα με το zoom level:
+        # - zoomed out → μήνες ("M1")
+        # - zoomed in  → εβδομάδες ή ημέρες ("D1")
+        tickformat="%b\n%Y",          # π.χ. "Mar\n2025" στο month level
+        minor=dict(
+            ticklen=4,
+            tickcolor="#cbd5e1",
+        ),
+        tickfont=dict(size=12),
+        fixedrange=False,
+        # Αφήνουμε το dtick κενό → Plotly auto-ticks
+    )
+
+    fig.update_layout(
+        height=max(400, len(df_plot) * 40),
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        margin=dict(l=20, r=20, t=60, b=40),
+        bargap=0.10,                   # μέτριο gap
+        bargroupgap=0.0,
+        showlegend=False,
+        title=dict(
+            text=f"Groups & Conferences — {selected_year}",
+            font=dict(size=18),
+        ),
+        dragmode="select",             # drag για select περιοχής + zoom
+        selectdirection="h",           # horizontal-only select (λογικό για timeline)
+    )
+
+    # Labels inside bars
+    for _, row in df_gantt.iterrows():
+        if row["Nights"] >= 3:
+            mid = row["Start"] + (row["Finish"] - row["Start"]) / 2
+            fig.add_annotation(
+                x=mid, y=row["Event"],
+                text=row["Event"],
+                showarrow=False,
+                font=dict(color="white", size=10, family="Arial Bold"),
+                xref="x", yref="y",
+            )
+
+    st.plotly_chart(fig, use_container_width=True, config={
+        "scrollZoom": False,           # scroll zoom off — χρησιμοποιούμε select+zoom
+        "displayModeBar": True,
+        "modeBarButtonsToRemove": ["lasso2d"],
+        "modeBarButtonsToAdd": ["zoomIn2d", "zoomOut2d", "resetScale2d"],
+    })
 
 
 # ─────────────────────────────────────────────
