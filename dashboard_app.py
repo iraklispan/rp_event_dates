@@ -7,6 +7,7 @@ import pandas as pd
 import plotly.graph_objects as go
 from datetime import datetime
 import base64
+import streamlit.components.v1 as components
 from shared import (
     load_data, event_color, num_days,
     get_event_rooms, get_event_spaces,
@@ -247,11 +248,43 @@ def render_client_card(event_row, rooms_df, spaces_list, color, row_idx):
     with c2:
         # Δημιουργούμε το HTML και το μετατρέπουμε σε Base64 Data URL
         html_content = generate_printable_html(event_row, rooms_df, spaces_list, color)
-        b64 = base64.b64encode(html_content.encode("utf-8")).decode()
+        b64 = base64.b64encode(html_content.encode("utf-8")).decode("utf-8")
         
-        # Φτιάχνουμε ένα κουμπί/link που ανοίγει σε νέο Tab
-        print_link = f'<a href="data:text/html;base64,{b64}" target="_blank" style="text-decoration: none; display: inline-block; padding: 6px 14px; background-color: white; color: #334155; border-radius: 4px; border: 1px solid #cbd5e1; font-weight: 500; font-size: 14px; margin-top: 2px; box-shadow: 0 1px 2px rgba(0,0,0,0.05);">🖨️ Εκτύπωση / PDF</a>'
-        st.markdown(print_link, unsafe_allow_html=True)
+        # Javascript κουμπί που ανοίγει νέο παράθυρο και περνάει το HTML
+        button_html = f"""
+        <style>
+        body {{ margin: 0; padding: 0; }}
+        .print-btn {{
+            padding: 6px 14px; 
+            background-color: white; 
+            color: #334155;
+            border-radius: 6px; 
+            border: 1px solid #cbd5e1;
+            font-weight: 500; 
+            font-size: 14px; 
+            font-family: 'Segoe UI', Roboto, sans-serif;
+            cursor: pointer;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+            transition: all 0.2s;
+        }}
+        .print-btn:hover {{ border-color: #94a3b8; background-color: #f8fafc; }}
+        </style>
+        
+        <button class="print-btn" onclick="
+            const binary = atob('{b64}');
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) {{
+                bytes[i] = binary.charCodeAt(i);
+            }}
+            const decodedHtml = new TextDecoder('utf-8').decode(bytes);
+            const w = window.open('', '_blank');
+            w.document.open();
+            w.document.write(decodedHtml);
+            w.document.close();
+        ">🖨️ Εκτύπωση / PDF</button>
+        """
+        # Το height=40 διασφαλίζει ότι χωράει ακριβώς δίπλα στο κουμπί του Edit
+        components.html(button_html, height=40)
         
 
     # General
