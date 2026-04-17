@@ -110,10 +110,33 @@ SERVICES = [
     "DJ Party",
 ]
 
+EVENT_TYPES = [
+    "Conference",
+    "Seminar",
+    "Workshop",
+    "Corporate Meeting",
+    "Corporate Event",
+    "Networking Event",
+    "Trade Show",
+    "Exhibition",
+    "Wedding",
+    "Reception",
+    "Gala",
+    "Baptism",
+    "Party",
+    "Private Event",
+    "Press Conference",
+    "Show",
+    "Ceremony",
+    "Tournament",
+    "Art Exhibition",
+    "Banquet",
+]
+
 # Sheet headers
 EVENTS_HEADER = [
     "event_id", "submitted_at", "submitted_by",
-    "event_name", "event_start", "event_end", "attendees",
+    "event_name", "event_type", "event_start", "event_end", "attendees",
     "includes_accommodation", "acc_start", "acc_end",
     "booking_code", "cut_off_date",
     "cancellation_policy", "cancellation_days", "deposit_days",
@@ -358,6 +381,7 @@ def prefill_form_state(event_row, rooms_df, spaces_list, prefix=""):
     p = prefix
     st.session_state[f"{p}submitted_by"]   = safe_str(event_row.get("submitted_by"))
     st.session_state[f"{p}event_name"]     = safe_str(event_row.get("event_name"))
+    st.session_state[f"{p}event_type"]     = safe_str(event_row.get("event_type"), EVENT_TYPES[0])
     st.session_state[f"{p}attendees"]      = safe_int(event_row.get("attendees"))
     st.session_state[f"{p}event_start"]    = safe_date(event_row.get("event_start"))
     st.session_state[f"{p}event_end"]      = safe_date(event_row.get("event_end"))
@@ -460,6 +484,7 @@ def render_event_form(prefix="", submit_label="💾 Save Event"):
     with c1:
         st.text_input("Your Name *", key=f"{prefix}submitted_by")
         st.text_input("Event Name *", key=f"{prefix}event_name")
+        st.selectbox("Event Type *", EVENT_TYPES, key=f"{prefix}event_type")
         st.number_input("Number of Attendees", min_value=1, step=1,
                         key=f"{prefix}attendees")
     with c2:
@@ -561,6 +586,7 @@ def _save_from_state(prefix, incl_acc, incl_spaces):
         "submitted_at":            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "submitted_by":            st.session_state.get(f"{p}submitted_by", ""),
         "event_name":              event_name,
+        "event_type":              st.session_state.get(f"{p}event_type", ""),
         "event_start":             str(st.session_state.get(f"{p}event_start", "")),
         "event_end":               str(st.session_state.get(f"{p}event_end", "")),
         "attendees":               st.session_state.get(f"{p}attendees", ""),
