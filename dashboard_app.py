@@ -232,31 +232,9 @@ def render_gantt(df_all, rooms_df, spaces_df):
         showgrid=True,
         gridcolor="#e2e8f0",
         gridwidth=1,
-        # Monthly ticks as primary, daily as secondary
-        ticklabelmode="period",
         dtick="M1",
-        tickformat="%b %Y",
-        tickfont=dict(size=12),
-        tickformatstops=[
-            # zoomed in to a few days → show day number
-            dict(dtickrange=[None, 3 * 24 * 60 * 60 * 1000],   value="%d %b"),
-            # zoomed to ~a week
-            dict(dtickrange=[3 * 24 * 60 * 60 * 1000,
-                             14 * 24 * 60 * 60 * 1000],         value="%d %b"),
-            # zoomed to ~a month → show day numbers
-            dict(dtickrange=[14 * 24 * 60 * 60 * 1000,
-                             45 * 24 * 60 * 60 * 1000],         value="%d"),
-            # full year view → show month
-            dict(dtickrange=[45 * 24 * 60 * 60 * 1000, None],  value="%b"),
-        ],
-        minor=dict(
-            dtick=24 * 60 * 60 * 1000,   # 1 day in ms
-            showgrid=True,
-            gridcolor="#f1f5f9",
-            gridwidth=1,
-            ticks="outside",
-            ticklen=3,
-        ),
+        tickformat="%B",
+        tickfont=dict(size=13),
         fixedrange=False,
     )
 
