@@ -6,6 +6,7 @@ import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 from datetime import datetime
+import base64
 from shared import (
     load_data, event_color, num_days,
     get_event_rooms, get_event_spaces,
@@ -36,6 +37,190 @@ def count_spaces_from_df(spaces_df, event_id):
     return len(spaces_df[spaces_df["event_id"] == event_id])
 
 
+def generate_printable_html(event_row, rooms_df, spaces_list, color):
+    # Format dates safely
+    ev_start = event_row["event_start"].strftime("%d/%m/%Y") if pd.notna(event_row.get("event_start")) else "—"
+    ev_end = event_row["event_end"].strftime("%d/%m/%Y") if pd.notna(event_row.get("event_end")) else "—"
+    duration = f"{num_days(event_row)} nights"
+    attendees = int(event_row.get("attendees", 0) or 0)
+
+    html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <title>Print - {event_row['event_name']}</title>
+        <style>
+            body {{ font-family: 'Segoe UI', Arial, sans-serif; padding: 40px; color: #1e293b; line-height: 1.5; }}
+            .card-header {{ border-left: 6px solid {color}; padding: 15px 25px; background: #f8fafc; border-radius: 8px; margin-bottom: 30px; }}
+            h1 {{ margin: 0 0 5px 0; font-size: 24px; }}
+            p.subtitle {{ margin: 0; color: #64748b; font-size: 14px; }}
+            h2 {{ border-bottom: 2px solid #e2e8f0; padding-bottom: 5px; margin-top: 30px; font-size: 18px; color: #0f172a; }}
+            
+            /* ΑΥΤΟ ΑΠΟΤΡΕΠΕΙ ΤΟ ΣΠΑΣΙΜΟ ΤΩΝ ΔΕΔΟΜΕΝΩΝ ΣΤΗ ΜΕΣΗ ΤΗΣ ΣΕΛΙΔΑΣ */
+            .section {{ margin-bottom: 25px; page-break-inside: avoid; break-inside: avoid; }}
+            
+            table {{ width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 14px; page-break-inside: avoid; }}
+            th, td {{ border: 1px solid #cbd5e1; padding: 10px; text-align: left; }}
+            th {{ background-color: #f1f5f9; font-weight: 600; }}
+            
+            .metrics-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 15px; margin-top: 15px; page-break-inside: avoid; }}
+            .metric-box {{ background: #ffffff; border: 1px solid #e2e8f0; padding: 15px; border-radius: 6px; }}
+            .metric-label {{ font-size: 12px; text-transform: uppercase; color: #64748b; letter-spacing: 0.5px; margin-bottom: 5px; }}
+            .metric-value {{ font-size: 18px; font-weight: 600; color: #0f172a; }}
+            
+            .badge {{ display: inline-block; padding: 4px 8px; border-radius: 4px; font-size: 13px; font-weight: 500; margin-top: 10px; }}
+            .badge-flexible {{ background: #dcfce7; color: #166534; border: 1px solid #bbf7d0; }}
+            .badge-deposit {{ background: #fef08a; color: #854d0e; border: 1px solid #fde047; }}
+            .badge-nonref {{ background: #fee2e2; color: #991b1b; border: 1px solid #fecaca; }}
+            
+            @media print {{
+                body {{ padding: 0; }}
+                .no-print {{ display: none !important; }}
+            }}
+            .print-btn {{
+                display: block; width: 200px; margin: 0 auto 30px auto; padding: 12px;
+                background: #334155; color: white; text-align: center; border-radius: 6px;
+                text-decoration: none; font-weight: bold; cursor: pointer; border: none;
+            }}
+            .print-btn:hover {{ background: #0f172a; }}
+        </style>
+    </head>
+    <body onload="window.print()"> <button class="no-print print-btn" onclick="window.print()">🖨️ Εκτύπωση / Save as PDF</button>
+
+        <div class="card-header section">
+            <h1>{event_row['event_name']}</h1>
+            <p class="subtitle">Submitted by <b>{event_row.get('submitted_by', '—')}</b></p>
+        </div>
+
+        <div class="section">
+            <h2>📌 General Information</h2>
+            <div class="metrics-grid">
+                <div class="metric-box"><div class="metric-label">Type</div><div class="metric-value">{event_row.get("event_type") or "—"}</div></div>
+                <div class="metric-box"><div class="metric-label">Start</div><div class="metric-value">{ev_start}</div></div>
+                <div class="metric-box"><div class="metric-label">End</div><div class="metric-value">{ev_end}</div></div>
+                <div class="metric-box"><div class="metric-label">Duration</div><div class="metric-value">{duration}</div></div>
+                <div class="metric-box"><div class="metric-label">Attendees</div><div class="metric-value">{attendees}</div></div>
+            </div>
+        </div>
+    """
+
+    if str(event_row.get("includes_accommodation", "")).lower() == "true":
+        acc_start = event_row.get("acc_start")
+        acc_end = event_row.get("acc_end")
+        a_start_str = acc_start.strftime("%d/%m/%Y") if pd.notna(acc_start) else "—"
+        a_end_str = acc_end.strftime("%d/%m/%Y") if pd.notna(acc_end) else "—"
+        b_code = event_row.get("booking_code") or "—"
+        m_stay = f"{int(event_row.get('minimum_stay', 0) or 0)} nights"
+
+        policy = event_row.get("cancellation_policy", "—")
+        policy_html = ""
+        if policy == "Flexible":
+            days = int(event_row.get('cancellation_days', 0) or 0)
+            policy_html = f'<div class="badge badge-flexible">✅ Flexible — Free cancellation up to {days} days before arrival</div>'
+        elif policy == "Night Deposit":
+            days = int(event_row.get('deposit_days', 0) or 0)
+            policy_html = f'<div class="badge badge-deposit">💳 Night Deposit — Required {days} days before arrival</div>'
+        elif policy == "Non Refundable":
+            policy_html = f'<div class="badge badge-nonref">🔒 Non Refundable</div>'
+
+        cut_off = event_row.get("cut_off_date")
+        cut_off_str = cut_off.strftime("%d/%m/%Y") if pd.notna(cut_off) else "—"
+
+        html += f"""
+        <div class="section">
+            <h2>🛏️ Accommodation</h2>
+            <div class="metrics-grid">
+                <div class="metric-box"><div class="metric-label">Check-in</div><div class="metric-value">{a_start_str}</div></div>
+                <div class="metric-box"><div class="metric-label">Check-out</div><div class="metric-value">{a_end_str}</div></div>
+                <div class="metric-box"><div class="metric-label">Booking Code</div><div class="metric-value">{b_code}</div></div>
+                <div class="metric-box"><div class="metric-label">Min Stay</div><div class="metric-value">{m_stay}</div></div>
+            </div>
+            {policy_html}
+            <div style="margin-top: 15px; font-size: 14px;"><b>Cut-off Date:</b> {cut_off_str}</div>
+        """
+
+        if not rooms_df.empty:
+            html += """
+            <h3 style="margin-top: 20px; font-size: 16px;">Room Types</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Room Type</th>
+                        <th>Count</th>
+                        <th>Rate Plan</th>
+                        <th>Prices</th>
+                    </tr>
+                </thead>
+                <tbody>
+            """
+            for _, r in rooms_df.iterrows():
+                prices = []
+                for combo in PRICE_COMBOS:
+                    k = f"price_{combo.replace('+', '_')}"
+                    try:
+                        v = int(float(r.get(k, 0) or 0))
+                    except Exception:
+                        v = 0
+                    if v > 0:
+                        prices.append(f"{combo}: €{v}")
+                prices_str = ", ".join(prices) if prices else "—"
+                html += f"""
+                    <tr>
+                        <td>{r.get('room_type', '')}</td>
+                        <td>{int(float(r.get('room_count', 0) or 0))}</td>
+                        <td>{r.get('rate_plan', '—')}</td>
+                        <td>{prices_str}</td>
+                    </tr>
+                """
+            html += """
+                </tbody>
+            </table>
+            """
+        html += "</div>" # Κλείνει το Accommodation
+
+    if str(event_row.get("includes_meeting_spaces", "")).lower() == "true" and spaces_list:
+        html += """
+        <div class="section">
+            <h2>🏛️ Meeting Spaces & Events</h2>
+        """
+        for sp in spaces_list:
+            html += f"""
+            <div class="section" style="margin-bottom: 15px; border: 1px solid #e2e8f0; padding: 15px; border-radius: 6px;">
+                <h3 style="margin-top: 0; margin-bottom: 10px;">{sp['space_name']}</h3>
+            """
+            if sp["services"]:
+                html += """
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Service</th>
+                            <th>Pax</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                """
+                for sv in sp["services"]:
+                    html += f"""
+                        <tr>
+                            <td>{sv['type']}</td>
+                            <td>{sv['pax']}</td>
+                        </tr>
+                    """
+                html += """
+                    </tbody>
+                </table>
+                """
+            html += "</div>"
+        html += "</div>"
+
+    html += """
+    </body>
+    </html>
+    """
+    return html
+
+
 # ─────────────────────────────────────────────
 # CLIENT CARD
 # ─────────────────────────────────────────────
@@ -50,11 +235,24 @@ def render_client_card(event_row, rooms_df, spaces_list, color, row_idx):
         unsafe_allow_html=True,
     )
 
-    if st.button("✏️ Edit this Event", key=f"edit_btn_{row_idx}"):
-        st.session_state["editing_event"] = event_row["event_name"]
-        init_form_state("edit_")
-        prefill_form_state(event_row, rooms_df, spaces_list, prefix="edit_")
-        st.rerun()
+    # --- ΝΕΟ ΚΟΜΜΑΤΙ ΓΙΑ ΤΑ ΚΟΥΜΠΙΑ ---
+    c1, c2 = st.columns([2, 10])
+    with c1:
+        if st.button("✏️ Edit this Event", key=f"edit_btn_{row_idx}"):
+            st.session_state["editing_event"] = event_row["event_name"]
+            init_form_state("edit_")
+            prefill_form_state(event_row, rooms_df, spaces_list, prefix="edit_")
+            st.rerun()
+            
+    with c2:
+        # Δημιουργούμε το HTML και το μετατρέπουμε σε Base64 Data URL
+        html_content = generate_printable_html(event_row, rooms_df, spaces_list, color)
+        b64 = base64.b64encode(html_content.encode("utf-8")).decode()
+        
+        # Φτιάχνουμε ένα κουμπί/link που ανοίγει σε νέο Tab
+        print_link = f'<a href="data:text/html;base64,{b64}" target="_blank" style="text-decoration: none; display: inline-block; padding: 6px 14px; background-color: white; color: #334155; border-radius: 4px; border: 1px solid #cbd5e1; font-weight: 500; font-size: 14px; margin-top: 2px; box-shadow: 0 1px 2px rgba(0,0,0,0.05);">🖨️ Εκτύπωση / PDF</a>'
+        st.markdown(print_link, unsafe_allow_html=True)
+        
 
     # General
     with st.expander("📌 General Information", expanded=True):
