@@ -222,7 +222,12 @@ def render_gantt(df_all, rooms_df, spaces_df):
         )
     )
 
-    fig.update_yaxes(autorange="reversed", tickfont=dict(size=12), title="")
+    fig.update_yaxes(
+        autorange="reversed", 
+        tickfont=dict(size=12), 
+        title="", 
+        fixedrange=True
+    )
 
     x_start = f"{selected_year}-03-01"
     x_end   = f"{selected_year}-10-31"
@@ -232,17 +237,15 @@ def render_gantt(df_all, rooms_df, spaces_df):
         showgrid=True,
         gridcolor="#e2e8f0",
         gridwidth=1,
-        # Plotly επιλέγει αυτόματα dtick ανάλογα με το zoom level:
-        # - zoomed out → μήνες ("M1")
-        # - zoomed in  → εβδομάδες ή ημέρες ("D1")
-        tickformat="%b\n%Y",          # π.χ. "Mar\n2025" στο month level
         minor=dict(
             ticklen=4,
             tickcolor="#cbd5e1",
         ),
         tickfont=dict(size=12),
         fixedrange=False,
-        # Αφήνουμε το dtick κενό → Plotly auto-ticks
+        # ΔΙΑΓΡΑΨΑΜΕ το tickformat="%b\n%Y". 
+        # Τώρα το Plotly θα δείχνει αυτόματα 1, 2, 3... 
+        # και στην πρώτη μέρα το όνομα του μήνα!
     )
 
     fig.update_layout(
@@ -250,18 +253,18 @@ def render_gantt(df_all, rooms_df, spaces_df):
         plot_bgcolor="white",
         paper_bgcolor="white",
         margin=dict(l=20, r=20, t=60, b=40),
-        bargap=0.10,                   # μέτριο gap
+        bargap=0.1,                    # <-- Απόσταση ανάμεσα στα bars ακριβώς στο 0.1
         bargroupgap=0.0,
         showlegend=False,
         title=dict(
             text=f"Groups & Conferences — {selected_year}",
             font=dict(size=18),
         ),
-        dragmode="select",             # drag για select περιοχής + zoom
-        selectdirection="h",           # horizontal-only select (λογικό για timeline)
+        dragmode="zoom",               # <-- Αυτόματο zoom με το drag!
+        # Διαγράψαμε το selectdirection="h" γιατί πλέον το χειρίζεται το zoom+fixedrange
     )
 
-    # Labels inside bars
+    # Labels inside bars (αυτό το κομμάτι παραμένει ίδιο)
     for _, row in df_gantt.iterrows():
         if row["Nights"] >= 3:
             mid = row["Start"] + (row["Finish"] - row["Start"]) / 2
@@ -273,11 +276,12 @@ def render_gantt(df_all, rooms_df, spaces_df):
                 xref="x", yref="y",
             )
 
+    # Ενημέρωση του config για να δέχεται το διπλό κλικ χωρίς προβλήματα
     st.plotly_chart(fig, use_container_width=True, config={
-        "scrollZoom": False,           # scroll zoom off — χρησιμοποιούμε select+zoom
+        "scrollZoom": False,
         "displayModeBar": True,
-        "modeBarButtonsToRemove": ["lasso2d"],
-        "modeBarButtonsToAdd": ["zoomIn2d", "zoomOut2d", "resetScale2d"],
+        "modeBarButtonsToRemove": ["lasso2d", "select2d"],
+        "doubleClick": "reset",        # Εξασφαλίζει ότι το διπλό κλικ κάνει reset
     })
 
 
