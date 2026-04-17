@@ -395,24 +395,22 @@ def render_gantt(df_all, rooms_df, spaces_df):
         return
 
     # ── Year filter ───────────────────────────
-    col1, col2, col3 = st.columns[3]
-    with col1:
-        available_years = sorted(df_valid["event_start"].dt.year.unique().tolist())
-        selected_year = st.selectbox(
-            "📅 Έτος", available_years,
-            index=len(available_years) - 1,
-            key="gantt_year",
-        )
+    available_years = sorted(df_valid["event_start"].dt.year.unique().tolist())
+    selected_year = st.selectbox(
+        "📅 Έτος", available_years,
+        index=len(available_years) - 1,
+        key="gantt_year",
+    )
 
-        df_plot = (
-            df_valid[df_valid["event_start"].dt.year == selected_year]
-            .sort_values("event_start")
-            .reset_index(drop=True)
-        )
+    df_plot = (
+        df_valid[df_valid["event_start"].dt.year == selected_year]
+        .sort_values("event_start")
+        .reset_index(drop=True)
+    )
 
-        if df_plot.empty:
-            st.info(f"Δεν υπάρχουν events για το {selected_year}.")
-            return
+    if df_plot.empty:
+        st.info(f"Δεν υπάρχουν events για το {selected_year}.")
+        return
 
     # Build records
     records = []
