@@ -1,5 +1,6 @@
 """
 shared.py — Κοινός κώδικας για form_app.py και dashboard_app.py
+Normalized schema: events / rooms / spaces / services
 """
 
 import streamlit as st
@@ -7,6 +8,8 @@ import gspread
 from google.oauth2.service_account import Credentials
 import pandas as pd
 from datetime import datetime, date
+import hashlib
+import uuid
 
 # ─────────────────────────────────────────────
 # CONSTANTS
@@ -107,76 +110,168 @@ SERVICES = [
     "DJ Party",
 ]
 
+# Sheet headers
+EVENTS_HEADER = [
+    "event_id", "submitted_at", "submitted_by",
+    "event_name", "event_start", "event_end", "attendees",
+    "includes_accommodation", "acc_start", "acc_end",
+    "booking_code", "cut_off_date",
+    "cancellation_policy", "cancellation_days", "deposit_days",
+    "minimum_stay", "includes_meeting_spaces",
+]
+
+ROOMS_HEADER = [
+    "event_id", "room_type", "room_count", "rate_plan",
+    "price_1_0", "price_2_0", "price_2_1", "price_2_2",
+    "price_3_0", "price_3_1", "price_4_0",
+]
+
+SPACES_HEADER = ["space_id", "event_id", "space_name"]
+
+SERVICES_HEADER = ["space_id", "event_id", "service_type", "service_pax"]
+
 
 # ─────────────────────────────────────────────
-# GOOGLE SHEETS
+# GOOGLE SHEETS CONNECTION
 # ─────────────────────────────────────────────
-def get_sheet():
+def get_workbook():
     creds_dict = st.secrets["gcp_service_account"]
     creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
     client = gspread.authorize(creds)
-    return client.open(SHEET_NAME).sheet1
+    return client.open(SHEET_NAME)
 
 
-def build_header():
-    cols = [
-        "submitted_at", "submitted_by",
-        "event_name", "event_start", "event_end", "attendees",
-        "includes_accommodation", "acc_start", "acc_end",
-    ]
-    for i in range(1, 11):
-        cols += [f"room{i}_type", f"room{i}_count", f"room{i}_rate_plan"]
-        for combo in PRICE_COMBOS:
-            cols.append(f"room{i}_price_{combo.replace('+', '_')}")
-    cols += [
-        "booking_code", "cut_off_date",
-        "cancellation_policy", "cancellation_days", "deposit_days",
-        "minimum_stay", "includes_meeting_spaces",
-    ]
-    for i in range(1, 11):
-        cols.append(f"space{i}_name")
-        for j in range(1, 11):
-            cols += [f"space{i}_service{j}_type", f"space{i}_service{j}_pax"]
-    return cols
+def get_or_create_sheet(wb, title, header):
+    """Get a worksheet by title, create it with header if it doesn't exist."""
+    try:
+        ws = wb.worksheet(title)
+    except gspread.exceptions.WorksheetNotFound:
+        ws = wb.add_worksheet(title=title, rows=2000, cols=len(header))
+        ws.update("A1", [header])
+        return ws
+
+    # Check if header row exists
+    try:
+        first_cell = ws.acell("A1").value
+    except Exception:
+        first_cell = None
+
+    if first_cell != header[0]:
+        ws.insert_row(header, 1)
+
+    return ws
 
 
-def ensure_header(sheet):
-    if sheet.row_count == 0 or sheet.cell(1, 1).value != "submitted_at":
-        sheet.insert_row(build_header(), 1)
+def get_sheets():
+    wb = get_workbook()
+    return {
+        "events":   get_or_create_sheet(wb, "events",   EVENTS_HEADER),
+        "rooms":    get_or_create_sheet(wb, "rooms",    ROOMS_HEADER),
+        "spaces":   get_or_create_sheet(wb, "spaces",   SPACES_HEADER),
+        "services": get_or_create_sheet(wb, "services", SERVICES_HEADER),
+    }
 
 
+def sheet_to_df(ws, header):
+    """Read a worksheet into a DataFrame safely."""
+    values = ws.get_all_values()
+    if not values or len(values) < 2:
+        return pd.DataFrame(columns=header)
+    rows = values[1:]
+    padded = [r + [""] * (len(header) - len(r)) for r in rows]
+    df = pd.DataFrame(padded, columns=header)
+    return df[df[header[0]].str.strip() != ""]
+
+
+# ─────────────────────────────────────────────
+# LOAD DATA
+# ─────────────────────────────────────────────
 @st.cache_data(ttl=60)
 def load_data():
-    """Load all rows, return only the latest version of each event_name."""
-    creds_dict = st.secrets["gcp_service_account"]
-    creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
-    client = gspread.authorize(creds)
-    sheet = client.open(SHEET_NAME).sheet1
-    all_values = sheet.get_all_values()
-    if not all_values or len(all_values) < 2:
-        return pd.DataFrame()
-    headers = all_values[0]
-    rows = all_values[1:]
-    # Pad rows that are shorter than the header
-    padded = [r + [""] * (len(headers) - len(r)) for r in rows]
-    df = pd.DataFrame(padded, columns=headers)
-    # Drop completely empty rows
-    df = df[df["event_name"].str.strip() != ""]
+    """
+    Returns dict with DataFrames: events, rooms, spaces, services.
+    events contains only the latest version per event_name.
+    """
+    wb = get_workbook()
+    titles = [ws.title for ws in wb.worksheets()]
+
+    def safe_load(title, header):
+        if title in titles:
+            return sheet_to_df(wb.worksheet(title), header)
+        return pd.DataFrame(columns=header)
+
+    events_df   = safe_load("events",   EVENTS_HEADER)
+    rooms_df    = safe_load("rooms",    ROOMS_HEADER)
+    spaces_df   = safe_load("spaces",   SPACES_HEADER)
+    services_df = safe_load("services", SERVICES_HEADER)
+
+    # Parse dates in events
     for col in ["event_start", "event_end", "acc_start", "acc_end", "cut_off_date"]:
-        if col in df.columns:
-            df[col] = pd.to_datetime(df[col], errors="coerce")
-    df["submitted_at"] = pd.to_datetime(df["submitted_at"], errors="coerce")
-    # Keep only the latest version per event
-    df = df.sort_values("submitted_at").groupby("event_name", as_index=False).last()
-    return df
+        if col in events_df.columns:
+            events_df[col] = pd.to_datetime(events_df[col], errors="coerce")
+    events_df["submitted_at"] = pd.to_datetime(events_df["submitted_at"], errors="coerce")
+
+    # Keep only latest per event_name
+    if not events_df.empty:
+        events_df = (
+            events_df
+            .sort_values("submitted_at")
+            .groupby("event_name", as_index=False)
+            .last()
+        )
+
+    return {
+        "events":   events_df,
+        "rooms":    rooms_df,
+        "spaces":   spaces_df,
+        "services": services_df,
+    }
 
 
-def append_row(row_data: list):
-    sheet = get_sheet()
-    ensure_header(sheet)
-    sheet.append_row(row_data, value_input_option="USER_ENTERED")
-    # Clear cache so dashboard reloads fresh data
+# ─────────────────────────────────────────────
+# SAVE DATA
+# ─────────────────────────────────────────────
+def save_event(event_row, room_rows, space_rows, service_rows):
+    """
+    Appends all rows to the appropriate sheets using batch writes.
+    """
+    sheets = get_sheets()
+
+    # events — always one row
+    sheets["events"].append_row(
+        [str(event_row.get(c, "")) for c in EVENTS_HEADER],
+        value_input_option="USER_ENTERED",
+    )
+
+    # rooms — batch if multiple
+    if room_rows:
+        data = [[str(r.get(c, "")) for c in ROOMS_HEADER] for r in room_rows]
+        sheets["rooms"].append_rows(data, value_input_option="USER_ENTERED")
+
+    # spaces — batch if multiple
+    if space_rows:
+        data = [[str(s.get(c, "")) for c in SPACES_HEADER] for s in space_rows]
+        sheets["spaces"].append_rows(data, value_input_option="USER_ENTERED")
+
+    # services — batch if multiple
+    if service_rows:
+        data = [[str(sv.get(c, "")) for c in SERVICES_HEADER] for sv in service_rows]
+        sheets["services"].append_rows(data, value_input_option="USER_ENTERED")
+
     load_data.clear()
+
+
+# ─────────────────────────────────────────────
+# ID GENERATION
+# ─────────────────────────────────────────────
+def generate_event_id(event_name: str) -> str:
+    ts = datetime.now().strftime("%Y%m%d%H%M%S")
+    short = hashlib.md5(event_name.encode()).hexdigest()[:6]
+    return f"{ts}_{short}"
+
+
+def generate_space_id(event_id: str, space_name: str, idx: int) -> str:
+    return f"{event_id}_sp{idx}"
 
 
 # ─────────────────────────────────────────────
@@ -186,33 +281,7 @@ def event_color(idx: int) -> str:
     return COLOR_PALETTE[idx % len(COLOR_PALETTE)]
 
 
-def count_rooms(row) -> int:
-    total = 0
-    for i in range(1, 11):
-        col = f"room{i}_type"
-        if col in row.index and pd.notna(row[col]) and str(row[col]).strip():
-            total += int(row.get(f"room{i}_count", 0) or 0)
-    return total
-
-
-def count_spaces(row) -> int:
-    total = 0
-    for i in range(1, 11):
-        col = f"space{i}_name"
-        if col in row.index and pd.notna(row[col]) and str(row[col]).strip():
-            total += 1
-    return total
-
-
-def num_days(row) -> int:
-    try:
-        return (row["event_end"] - row["event_start"]).days
-    except Exception:
-        return 0
-
-
 def safe_date(val) -> date:
-    """Convert a value to date safely."""
     if isinstance(val, date):
         return val
     try:
@@ -223,22 +292,59 @@ def safe_date(val) -> date:
 
 def safe_int(val, default=0) -> int:
     try:
-        return int(val or default)
+        return int(float(val or default))
     except Exception:
         return default
 
 
 def safe_str(val, default="") -> str:
-    if pd.isna(val) if not isinstance(val, str) else False:
+    if val is None:
         return default
-    return str(val) if val else default
+    if isinstance(val, float) and pd.isna(val):
+        return default
+    return str(val).strip() if str(val).strip() else default
+
+
+def num_days(row) -> int:
+    try:
+        return (row["event_end"] - row["event_start"]).days
+    except Exception:
+        return 0
+
+
+def get_event_rooms(rooms_df, event_id):
+    if rooms_df.empty:
+        return pd.DataFrame()
+    return rooms_df[rooms_df["event_id"] == event_id].copy()
+
+
+def get_event_spaces(spaces_df, services_df, event_id):
+    """Returns list of dicts: [{space_id, space_name, services: [{type, pax}]}]"""
+    if spaces_df.empty:
+        return []
+    ev_spaces = spaces_df[spaces_df["event_id"] == event_id]
+    result = []
+    for _, sp in ev_spaces.iterrows():
+        services = []
+        if not services_df.empty:
+            ev_services = services_df[services_df["space_id"] == sp["space_id"]]
+            for _, sv in ev_services.iterrows():
+                services.append({
+                    "type": safe_str(sv.get("service_type")),
+                    "pax":  safe_int(sv.get("service_pax")),
+                })
+        result.append({
+            "space_id":   sp["space_id"],
+            "space_name": sp["space_name"],
+            "services":   services,
+        })
+    return result
 
 
 # ─────────────────────────────────────────────
-# SHARED FORM STATE INIT
+# SESSION STATE
 # ─────────────────────────────────────────────
 def init_form_state(prefix=""):
-    """Initialize session state counters for rooms/spaces."""
     if f"{prefix}num_rooms" not in st.session_state:
         st.session_state[f"{prefix}num_rooms"] = 1
     if f"{prefix}num_spaces" not in st.session_state:
@@ -247,63 +353,57 @@ def init_form_state(prefix=""):
         st.session_state[f"{prefix}space_services"] = {1: 1}
 
 
-def prefill_form_state(row, prefix=""):
-    """Pre-fill session state from an existing row (for edit mode)."""
-    st.session_state[f"{prefix}submitted_by"] = safe_str(row.get("submitted_by"))
-    st.session_state[f"{prefix}event_name"] = safe_str(row.get("event_name"))
-    st.session_state[f"{prefix}attendees"] = safe_int(row.get("attendees"))
-    st.session_state[f"{prefix}event_start"] = safe_date(row.get("event_start"))
-    st.session_state[f"{prefix}event_end"] = safe_date(row.get("event_end"))
-    st.session_state[f"{prefix}includes_accommodation"] = str(row.get("includes_accommodation", "")).lower() == "true"
-    st.session_state[f"{prefix}acc_start"] = safe_date(row.get("acc_start"))
-    st.session_state[f"{prefix}acc_end"] = safe_date(row.get("acc_end"))
-    st.session_state[f"{prefix}booking_code"] = safe_str(row.get("booking_code"))
-    st.session_state[f"{prefix}cut_off_date"] = safe_date(row.get("cut_off_date"))
-    st.session_state[f"{prefix}cancellation_policy"] = safe_str(row.get("cancellation_policy"), "Flexible")
-    st.session_state[f"{prefix}cancellation_days"] = safe_int(row.get("cancellation_days"))
-    st.session_state[f"{prefix}deposit_days"] = safe_int(row.get("deposit_days"))
-    st.session_state[f"{prefix}minimum_stay"] = safe_int(row.get("minimum_stay"))
-    st.session_state[f"{prefix}includes_meeting_spaces"] = str(row.get("includes_meeting_spaces", "")).lower() == "true"
+def prefill_form_state(event_row, rooms_df, spaces_list, prefix=""):
+    """Pre-fill session state from existing data for edit mode."""
+    p = prefix
+    st.session_state[f"{p}submitted_by"]   = safe_str(event_row.get("submitted_by"))
+    st.session_state[f"{p}event_name"]     = safe_str(event_row.get("event_name"))
+    st.session_state[f"{p}attendees"]      = safe_int(event_row.get("attendees"))
+    st.session_state[f"{p}event_start"]    = safe_date(event_row.get("event_start"))
+    st.session_state[f"{p}event_end"]      = safe_date(event_row.get("event_end"))
+    st.session_state[f"{p}includes_accommodation"] = (
+        safe_str(event_row.get("includes_accommodation")).lower() == "true"
+    )
+    st.session_state[f"{p}acc_start"]      = safe_date(event_row.get("acc_start"))
+    st.session_state[f"{p}acc_end"]        = safe_date(event_row.get("acc_end"))
+    st.session_state[f"{p}booking_code"]   = safe_str(event_row.get("booking_code"))
+    st.session_state[f"{p}cut_off_date"]   = safe_date(event_row.get("cut_off_date"))
+    st.session_state[f"{p}cancellation_policy"] = safe_str(event_row.get("cancellation_policy"), "Flexible")
+    st.session_state[f"{p}cancellation_days"]   = safe_int(event_row.get("cancellation_days"))
+    st.session_state[f"{p}deposit_days"]        = safe_int(event_row.get("deposit_days"))
+    st.session_state[f"{p}minimum_stay"]        = safe_int(event_row.get("minimum_stay"))
+    st.session_state[f"{p}includes_meeting_spaces"] = (
+        safe_str(event_row.get("includes_meeting_spaces")).lower() == "true"
+    )
 
     # Rooms
-    num_rooms = 0
-    for i in range(1, 11):
-        rtype = safe_str(row.get(f"room{i}_type"))
-        if not rtype:
-            break
-        num_rooms = i
-        st.session_state[f"{prefix}room{i}_type"] = rtype
-        st.session_state[f"{prefix}room{i}_count"] = safe_int(row.get(f"room{i}_count"), 1)
-        st.session_state[f"{prefix}room{i}_rate_plan"] = safe_str(row.get(f"room{i}_rate_plan"), RATE_PLANS[0])
-        for combo in PRICE_COMBOS:
-            k = f"room{i}_price_{combo.replace('+', '_')}"
-            st.session_state[f"{prefix}{k}"] = safe_int(row.get(k), 0)
-    st.session_state[f"{prefix}num_rooms"] = max(num_rooms, 1)
+    if not rooms_df.empty:
+        for i, (_, r) in enumerate(rooms_df.iterrows(), start=1):
+            st.session_state[f"{p}room{i}_type"]     = safe_str(r.get("room_type"), ROOM_TYPES[0])
+            st.session_state[f"{p}room{i}_count"]    = safe_int(r.get("room_count"), 1)
+            st.session_state[f"{p}room{i}_rate_plan"]= safe_str(r.get("rate_plan"), RATE_PLANS[0])
+            for combo in PRICE_COMBOS:
+                k = f"price_{combo.replace('+', '_')}"
+                st.session_state[f"{p}room{i}_{k}"] = safe_int(r.get(k), 0)
+        st.session_state[f"{p}num_rooms"] = max(len(rooms_df), 1)
+    else:
+        st.session_state[f"{p}num_rooms"] = 1
 
-    # Spaces
-    num_spaces = 0
+    # Spaces & services
     space_services = {}
-    for i in range(1, 11):
-        sname = safe_str(row.get(f"space{i}_name"))
-        if not sname:
-            break
-        num_spaces = i
-        st.session_state[f"{prefix}space{i}_name"] = sname
-        num_sv = 0
-        for j in range(1, 11):
-            stype = safe_str(row.get(f"space{i}_service{j}_type"))
-            if not stype:
-                break
-            num_sv = j
-            st.session_state[f"{prefix}space{i}_service{j}_type"] = stype
-            st.session_state[f"{prefix}space{i}_service{j}_pax"] = safe_int(row.get(f"space{i}_service{j}_pax"))
-        space_services[i] = max(num_sv, 1)
-    st.session_state[f"{prefix}num_spaces"] = max(num_spaces, 1)
-    st.session_state[f"{prefix}space_services"] = space_services if space_services else {1: 1}
+    for i, sp in enumerate(spaces_list, start=1):
+        st.session_state[f"{p}space{i}_name"] = sp["space_name"]
+        num_sv = max(len(sp["services"]), 1)
+        space_services[i] = num_sv
+        for j, sv in enumerate(sp["services"], start=1):
+            st.session_state[f"{p}space{i}_service{j}_type"] = sv["type"]
+            st.session_state[f"{p}space{i}_service{j}_pax"]  = sv["pax"]
+    st.session_state[f"{p}num_spaces"]      = max(len(spaces_list), 1)
+    st.session_state[f"{p}space_services"]  = space_services if space_services else {1: 1}
 
 
 # ─────────────────────────────────────────────
-# SHARED FORM UI
+# FORM UI BLOCKS
 # ─────────────────────────────────────────────
 def render_room_block(idx, prefix=""):
     with st.container(border=True):
@@ -312,7 +412,8 @@ def render_room_block(idx, prefix=""):
         with c1:
             st.selectbox("Room Type", ROOM_TYPES, key=f"{prefix}room{idx}_type")
         with c2:
-            st.number_input("Number of Rooms", min_value=1, step=1, value=1, key=f"{prefix}room{idx}_count")
+            st.number_input("Number of Rooms", min_value=1, step=1, value=1,
+                            key=f"{prefix}room{idx}_count")
         with c3:
             st.selectbox("Rate Plan", RATE_PLANS, key=f"{prefix}room{idx}_rate_plan")
 
@@ -335,51 +436,52 @@ def render_space_block(s_idx, prefix=""):
         for sv_idx in range(1, num_sv + 1):
             c1, c2 = st.columns([2, 1])
             with c1:
-                st.selectbox(f"Service {sv_idx}", SERVICES, key=f"{prefix}space{s_idx}_service{sv_idx}_type")
+                st.selectbox(f"Service {sv_idx}", SERVICES,
+                             key=f"{prefix}space{s_idx}_service{sv_idx}_type")
             with c2:
-                st.number_input(f"Pax {sv_idx}", min_value=0, step=1, key=f"{prefix}space{s_idx}_service{sv_idx}_pax")
+                st.number_input(f"Pax {sv_idx}", min_value=0, step=1,
+                                key=f"{prefix}space{s_idx}_service{sv_idx}_pax")
 
         if st.button("➕ Add Service", key=f"{prefix}add_service_{s_idx}"):
             st.session_state[f"{prefix}space_services"][s_idx] = num_sv + 1
             st.rerun()
 
 
+# ─────────────────────────────────────────────
+# FULL FORM
+# ─────────────────────────────────────────────
 def render_event_form(prefix="", submit_label="💾 Save Event"):
-    """
-    Full event form. Returns True if submitted successfully.
-    prefix: used to namespace session state keys (useful for edit form in dashboard).
-    """
+    """Renders the full event form. Returns True on successful save."""
     init_form_state(prefix)
 
-    # ── 1. Basic Info ────────────────────────
+    # 1. Basic Info
     st.subheader("1. Basic Information")
     c1, c2 = st.columns(2)
     with c1:
         st.text_input("Your Name *", key=f"{prefix}submitted_by")
         st.text_input("Event Name *", key=f"{prefix}event_name")
-        st.number_input("Number of Attendees", min_value=1, step=1, key=f"{prefix}attendees")
+        st.number_input("Number of Attendees", min_value=1, step=1,
+                        key=f"{prefix}attendees")
     with c2:
         st.date_input("Event Start Date *", key=f"{prefix}event_start")
-        st.date_input("Event End Date *", key=f"{prefix}event_end")
+        st.date_input("Event End Date *",   key=f"{prefix}event_end")
 
     st.divider()
 
-    # ── 2. Accommodation ─────────────────────
+    # 2. Accommodation
     st.subheader("2. Accommodation")
-    incl_acc = st.toggle("Includes Accommodation", key=f"{prefix}includes_accommodation")
-
+    incl_acc = st.toggle("Includes Accommodation",
+                         key=f"{prefix}includes_accommodation")
     if incl_acc:
         c1, c2 = st.columns(2)
         with c1:
-            st.date_input("Check-in Date", key=f"{prefix}acc_start")
+            st.date_input("Check-in Date",  key=f"{prefix}acc_start")
         with c2:
             st.date_input("Check-out Date", key=f"{prefix}acc_end")
 
         st.markdown("#### Room Types")
-        num_rooms = st.session_state[f"{prefix}num_rooms"]
-        for i in range(1, num_rooms + 1):
+        for i in range(1, st.session_state[f"{prefix}num_rooms"] + 1):
             render_room_block(i, prefix)
-
         if st.button("➕ Add Another Room Type", key=f"{prefix}add_room"):
             st.session_state[f"{prefix}num_rooms"] += 1
             st.rerun()
@@ -388,7 +490,8 @@ def render_event_form(prefix="", submit_label="💾 Save Event"):
         c1, c2, c3 = st.columns(3)
         with c1:
             st.text_input("Booking Code", key=f"{prefix}booking_code")
-            st.number_input("Minimum Stay (nights)", min_value=0, step=1, key=f"{prefix}minimum_stay")
+            st.number_input("Minimum Stay (nights)", min_value=0, step=1,
+                            key=f"{prefix}minimum_stay")
         with c2:
             st.date_input("Cut-off Date", key=f"{prefix}cut_off_date")
         with c3:
@@ -396,29 +499,22 @@ def render_event_form(prefix="", submit_label="💾 Save Event"):
                 "Cancellation Policy", CANCELLATION_POLICIES,
                 key=f"{prefix}cancellation_policy",
             )
-
         if cancel_policy == "Flexible":
-            st.number_input(
-                "Free cancellation up to X days before arrival",
-                min_value=0, step=1, key=f"{prefix}cancellation_days",
-            )
+            st.number_input("Free cancellation up to X days before arrival",
+                            min_value=0, step=1, key=f"{prefix}cancellation_days")
         elif cancel_policy == "Night Deposit":
-            st.number_input(
-                "Deposit required X days before arrival",
-                min_value=0, step=1, key=f"{prefix}deposit_days",
-            )
+            st.number_input("Deposit required X days before arrival",
+                            min_value=0, step=1, key=f"{prefix}deposit_days")
 
     st.divider()
 
-    # ── 3. Meeting Spaces ────────────────────
+    # 3. Meeting Spaces
     st.subheader("3. Meeting Spaces & Events")
-    incl_spaces = st.toggle("Includes Meeting Spaces / Events", key=f"{prefix}includes_meeting_spaces")
-
+    incl_spaces = st.toggle("Includes Meeting Spaces / Events",
+                            key=f"{prefix}includes_meeting_spaces")
     if incl_spaces:
-        num_spaces = st.session_state[f"{prefix}num_spaces"]
-        for s_idx in range(1, num_spaces + 1):
+        for s_idx in range(1, st.session_state[f"{prefix}num_spaces"] + 1):
             render_space_block(s_idx, prefix)
-
         if st.button("➕ Add Another Space", key=f"{prefix}add_space"):
             new_idx = st.session_state[f"{prefix}num_spaces"] + 1
             st.session_state[f"{prefix}num_spaces"] = new_idx
@@ -427,8 +523,9 @@ def render_event_form(prefix="", submit_label="💾 Save Event"):
 
     st.divider()
 
-    # ── Submit ───────────────────────────────
-    if st.button(submit_label, type="primary", use_container_width=True, key=f"{prefix}submit_btn"):
+    # Submit
+    if st.button(submit_label, type="primary", use_container_width=True,
+                 key=f"{prefix}submit_btn"):
         errors = []
         if not st.session_state.get(f"{prefix}submitted_by", "").strip():
             errors.append("Το όνομά σου είναι υποχρεωτικό.")
@@ -439,10 +536,9 @@ def render_event_form(prefix="", submit_label="💾 Save Event"):
                 st.error(e)
             return False
 
-        row = build_row_from_state(prefix, incl_acc, incl_spaces)
         with st.spinner("Αποθήκευση..."):
             try:
-                append_row(row)
+                _save_from_state(prefix, incl_acc, incl_spaces)
                 return True
             except Exception as e:
                 st.error(f"❌ Σφάλμα: {e}")
@@ -452,49 +548,76 @@ def render_event_form(prefix="", submit_label="💾 Save Event"):
 
 
 # ─────────────────────────────────────────────
-# BUILD ROW FROM STATE
+# BUILD & SAVE FROM STATE
 # ─────────────────────────────────────────────
-def build_row_from_state(prefix, incl_acc, incl_spaces):
-    header = build_header()
-    row = {col: "" for col in header}
+def _save_from_state(prefix, incl_acc, incl_spaces):
+    p = prefix
+    event_name = st.session_state.get(f"{p}event_name", "")
+    event_id   = generate_event_id(event_name)
 
-    row["submitted_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    row["submitted_by"] = st.session_state.get(f"{prefix}submitted_by", "")
-    row["event_name"] = st.session_state.get(f"{prefix}event_name", "")
-    row["event_start"] = str(st.session_state.get(f"{prefix}event_start", ""))
-    row["event_end"] = str(st.session_state.get(f"{prefix}event_end", ""))
-    row["attendees"] = st.session_state.get(f"{prefix}attendees", "")
-    row["includes_accommodation"] = str(incl_acc)
+    # ── Event row ────────────────────────────
+    event_row = {
+        "event_id":                event_id,
+        "submitted_at":            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "submitted_by":            st.session_state.get(f"{p}submitted_by", ""),
+        "event_name":              event_name,
+        "event_start":             str(st.session_state.get(f"{p}event_start", "")),
+        "event_end":               str(st.session_state.get(f"{p}event_end", "")),
+        "attendees":               st.session_state.get(f"{p}attendees", ""),
+        "includes_accommodation":  str(incl_acc),
+        "acc_start":               str(st.session_state.get(f"{p}acc_start", "")) if incl_acc else "",
+        "acc_end":                 str(st.session_state.get(f"{p}acc_end", ""))   if incl_acc else "",
+        "booking_code":            st.session_state.get(f"{p}booking_code", "")  if incl_acc else "",
+        "cut_off_date":            str(st.session_state.get(f"{p}cut_off_date", "")) if incl_acc else "",
+        "cancellation_policy":     st.session_state.get(f"{p}cancellation_policy", "") if incl_acc else "",
+        "cancellation_days":       st.session_state.get(f"{p}cancellation_days", "") if incl_acc else "",
+        "deposit_days":            st.session_state.get(f"{p}deposit_days", "")  if incl_acc else "",
+        "minimum_stay":            st.session_state.get(f"{p}minimum_stay", "")  if incl_acc else "",
+        "includes_meeting_spaces": str(incl_spaces),
+    }
 
+    # ── Room rows ────────────────────────────
+    room_rows = []
     if incl_acc:
-        row["acc_start"] = str(st.session_state.get(f"{prefix}acc_start", ""))
-        row["acc_end"] = str(st.session_state.get(f"{prefix}acc_end", ""))
-        for i in range(1, st.session_state[f"{prefix}num_rooms"] + 1):
-            row[f"room{i}_type"] = st.session_state.get(f"{prefix}room{i}_type", "")
-            row[f"room{i}_count"] = st.session_state.get(f"{prefix}room{i}_count", "")
-            row[f"room{i}_rate_plan"] = st.session_state.get(f"{prefix}room{i}_rate_plan", "")
+        for i in range(1, st.session_state[f"{p}num_rooms"] + 1):
+            rtype = st.session_state.get(f"{p}room{i}_type", "")
+            if not rtype:
+                continue
+            r = {
+                "event_id":  event_id,
+                "room_type": rtype,
+                "room_count":st.session_state.get(f"{p}room{i}_count", 1),
+                "rate_plan": st.session_state.get(f"{p}room{i}_rate_plan", ""),
+            }
             for combo in PRICE_COMBOS:
-                k = f"room{i}_price_{combo.replace('+', '_')}"
-                row[k] = st.session_state.get(f"{prefix}{k}", 0)
-        row["booking_code"] = st.session_state.get(f"{prefix}booking_code", "")
-        row["cut_off_date"] = str(st.session_state.get(f"{prefix}cut_off_date", ""))
-        row["cancellation_policy"] = st.session_state.get(f"{prefix}cancellation_policy", "")
-        row["cancellation_days"] = st.session_state.get(f"{prefix}cancellation_days", "")
-        row["deposit_days"] = st.session_state.get(f"{prefix}deposit_days", "")
-        row["minimum_stay"] = st.session_state.get(f"{prefix}minimum_stay", "")
+                k = f"price_{combo.replace('+', '_')}"
+                r[k] = st.session_state.get(f"{p}room{i}_{k}", 0)
+            room_rows.append(r)
 
-    row["includes_meeting_spaces"] = str(incl_spaces)
-
+    # ── Space & service rows ─────────────────
+    space_rows   = []
+    service_rows = []
     if incl_spaces:
-        for s_idx in range(1, st.session_state[f"{prefix}num_spaces"] + 1):
-            row[f"space{s_idx}_name"] = st.session_state.get(f"{prefix}space{s_idx}_name", "")
-            num_sv = st.session_state[f"{prefix}space_services"].get(s_idx, 1)
+        for s_idx in range(1, st.session_state[f"{p}num_spaces"] + 1):
+            sname = st.session_state.get(f"{p}space{s_idx}_name", "")
+            if not sname:
+                continue
+            space_id = generate_space_id(event_id, sname, s_idx)
+            space_rows.append({
+                "space_id":  space_id,
+                "event_id":  event_id,
+                "space_name":sname,
+            })
+            num_sv = st.session_state[f"{p}space_services"].get(s_idx, 1)
             for sv_idx in range(1, num_sv + 1):
-                row[f"space{s_idx}_service{sv_idx}_type"] = st.session_state.get(
-                    f"{prefix}space{s_idx}_service{sv_idx}_type", ""
-                )
-                row[f"space{s_idx}_service{sv_idx}_pax"] = st.session_state.get(
-                    f"{prefix}space{s_idx}_service{sv_idx}_pax", ""
-                )
+                stype = st.session_state.get(f"{p}space{s_idx}_service{sv_idx}_type", "")
+                spax  = st.session_state.get(f"{p}space{s_idx}_service{sv_idx}_pax", 0)
+                if stype:
+                    service_rows.append({
+                        "space_id":    space_id,
+                        "event_id":    event_id,
+                        "service_type":stype,
+                        "service_pax": spax,
+                    })
 
-    return [row[col] for col in header]
+    save_event(event_row, room_rows, space_rows, service_rows)

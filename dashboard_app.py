@@ -7,100 +7,124 @@ import pandas as pd
 import plotly.graph_objects as go
 from datetime import datetime
 from shared import (
-    load_data, event_color, count_rooms, count_spaces, num_days,
-    PRICE_COMBOS, render_event_form, prefill_form_state, init_form_state,
+    load_data, event_color, num_days,
+    get_event_rooms, get_event_spaces,
+    PRICE_COMBOS, render_event_form,
+    prefill_form_state, init_form_state,
 )
 
 
 # ─────────────────────────────────────────────
-# CLIENT CARD (view mode)
+# HELPERS
 # ─────────────────────────────────────────────
-def render_client_card(row, color, row_idx):
+def count_rooms_from_df(rooms_df, event_id):
+    if rooms_df.empty:
+        return 0
+    ev = rooms_df[rooms_df["event_id"] == event_id]
+    total = 0
+    for _, r in ev.iterrows():
+        try:
+            total += int(float(r.get("room_count", 0) or 0))
+        except Exception:
+            pass
+    return total
+
+
+def count_spaces_from_df(spaces_df, event_id):
+    if spaces_df.empty:
+        return 0
+    return len(spaces_df[spaces_df["event_id"] == event_id])
+
+
+# ─────────────────────────────────────────────
+# CLIENT CARD
+# ─────────────────────────────────────────────
+def render_client_card(event_row, rooms_df, spaces_list, color, row_idx):
     st.markdown(
         f"""<div style="border-left:5px solid {color};padding:0.6rem 1.2rem;
         background:#f8fafc;border-radius:8px;margin-bottom:1rem;">
-        <h3 style="margin:0;color:#1e293b;">{row['event_name']}</h3>
-        <p style="margin:0;color:#64748b;">Submitted by <b>{row.get('submitted_by','—')}</b></p>
+        <h3 style="margin:0;color:#1e293b;">{event_row['event_name']}</h3>
+        <p style="margin:0;color:#64748b;">Submitted by
+        <b>{event_row.get('submitted_by','—')}</b></p>
         </div>""",
         unsafe_allow_html=True,
     )
 
-    # Edit button
     if st.button("✏️ Edit this Event", key=f"edit_btn_{row_idx}"):
-        st.session_state["editing_event"] = row["event_name"]
+        st.session_state["editing_event"] = event_row["event_name"]
         init_form_state("edit_")
-        prefill_form_state(row, prefix="edit_")
+        prefill_form_state(event_row, rooms_df, spaces_list, prefix="edit_")
         st.rerun()
 
-    # ── General ──────────────────────────────
+    # General
     with st.expander("📌 General Information", expanded=True):
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Start", row["event_start"].strftime("%d/%m/%Y") if pd.notna(row["event_start"]) else "—")
-        c2.metric("End", row["event_end"].strftime("%d/%m/%Y") if pd.notna(row["event_end"]) else "—")
-        c3.metric("Duration", f"{num_days(row)} nights")
-        c4.metric("Attendees", int(row.get("attendees", 0) or 0))
+        c1.metric("Start", event_row["event_start"].strftime("%d/%m/%Y")
+                  if pd.notna(event_row["event_start"]) else "—")
+        c2.metric("End", event_row["event_end"].strftime("%d/%m/%Y")
+                  if pd.notna(event_row["event_end"]) else "—")
+        c3.metric("Duration", f"{num_days(event_row)} nights")
+        c4.metric("Attendees", int(event_row.get("attendees", 0) or 0))
 
-    # ── Accommodation ────────────────────────
-    if str(row.get("includes_accommodation", "")).lower() == "true":
+    # Accommodation
+    if str(event_row.get("includes_accommodation", "")).lower() == "true":
         with st.expander("🛏️ Accommodation", expanded=True):
             c1, c2, c3, c4 = st.columns(4)
-            acc_start = row.get("acc_start")
-            acc_end = row.get("acc_end")
-            c1.metric("Check-in", acc_start.strftime("%d/%m/%Y") if pd.notna(acc_start) else "—")
-            c2.metric("Check-out", acc_end.strftime("%d/%m/%Y") if pd.notna(acc_end) else "—")
-            c3.metric("Booking Code", row.get("booking_code") or "—")
-            c4.metric("Min Stay", f"{int(row.get('minimum_stay', 0) or 0)} nights")
+            acc_start = event_row.get("acc_start")
+            acc_end   = event_row.get("acc_end")
+            c1.metric("Check-in",  acc_start.strftime("%d/%m/%Y") if pd.notna(acc_start) else "—")
+            c2.metric("Check-out", acc_end.strftime("%d/%m/%Y")   if pd.notna(acc_end)   else "—")
+            c3.metric("Booking Code", event_row.get("booking_code") or "—")
+            c4.metric("Min Stay", f"{int(event_row.get('minimum_stay', 0) or 0)} nights")
 
-            policy = row.get("cancellation_policy", "—")
+            policy = event_row.get("cancellation_policy", "—")
             if policy == "Flexible":
-                st.info(f"✅ Flexible — Free cancellation up to **{int(row.get('cancellation_days', 0) or 0)} days** before arrival")
+                st.info(f"✅ Flexible — Free cancellation up to "
+                        f"**{int(event_row.get('cancellation_days', 0) or 0)} days** before arrival")
             elif policy == "Night Deposit":
-                st.warning(f"💳 Night Deposit — Required **{int(row.get('deposit_days', 0) or 0)} days** before arrival")
+                st.warning(f"💳 Night Deposit — Required "
+                           f"**{int(event_row.get('deposit_days', 0) or 0)} days** before arrival")
             elif policy == "Non Refundable":
                 st.error("🔒 Non Refundable")
 
-            cut_off = row.get("cut_off_date")
+            cut_off = event_row.get("cut_off_date")
             if pd.notna(cut_off):
                 st.markdown(f"**Cut-off Date:** {cut_off.strftime('%d/%m/%Y')}")
 
-            st.markdown("---")
-            st.markdown("**Room Types**")
-            room_rows = []
-            for i in range(1, 11):
-                rtype = row.get(f"room{i}_type", "")
-                if not rtype or str(rtype).strip() == "":
-                    continue
-                prices = {}
-                for combo in PRICE_COMBOS:
-                    k = f"room{i}_price_{combo.replace('+', '_')}"
-                    v = row.get(k, 0)
-                    if v and int(v or 0) > 0:
-                        prices[combo] = f"€{int(v)}"
-                room_rows.append({
-                    "Room Type": rtype,
-                    "Count": int(row.get(f"room{i}_count", 0) or 0),
-                    "Rate Plan": row.get(f"room{i}_rate_plan", "—"),
-                    **prices,
-                })
-            if room_rows:
-                st.dataframe(pd.DataFrame(room_rows), use_container_width=True, hide_index=True)
+            if not rooms_df.empty:
+                st.markdown("---")
+                st.markdown("**Room Types**")
+                room_rows = []
+                for _, r in rooms_df.iterrows():
+                    prices = {}
+                    for combo in PRICE_COMBOS:
+                        k = f"price_{combo.replace('+', '_')}"
+                        try:
+                            v = int(float(r.get(k, 0) or 0))
+                        except Exception:
+                            v = 0
+                        if v > 0:
+                            prices[combo] = f"€{v}"
+                    room_rows.append({
+                        "Room Type": r.get("room_type", ""),
+                        "Count":     int(float(r.get("room_count", 0) or 0)),
+                        "Rate Plan": r.get("rate_plan", "—"),
+                        **prices,
+                    })
+                st.dataframe(pd.DataFrame(room_rows),
+                             use_container_width=True, hide_index=True)
 
-    # ── Meeting Spaces ───────────────────────
-    if str(row.get("includes_meeting_spaces", "")).lower() == "true":
+    # Meeting Spaces
+    if str(event_row.get("includes_meeting_spaces", "")).lower() == "true" and spaces_list:
         with st.expander("🏛️ Meeting Spaces & Events", expanded=True):
-            for i in range(1, 11):
-                sname = row.get(f"space{i}_name", "")
-                if not sname or str(sname).strip() == "":
-                    continue
-                st.markdown(f"**{sname}**")
-                services = []
-                for j in range(1, 11):
-                    stype = row.get(f"space{i}_service{j}_type", "")
-                    spax = row.get(f"space{i}_service{j}_pax", 0)
-                    if stype and str(stype).strip():
-                        services.append({"Service": stype, "Pax": int(spax or 0)})
-                if services:
-                    st.dataframe(pd.DataFrame(services), use_container_width=True, hide_index=True)
+            for sp in spaces_list:
+                st.markdown(f"**{sp['space_name']}**")
+                if sp["services"]:
+                    svc_df = pd.DataFrame([
+                        {"Service": sv["type"], "Pax": sv["pax"]}
+                        for sv in sp["services"]
+                    ])
+                    st.dataframe(svc_df, use_container_width=True, hide_index=True)
                 st.markdown("")
 
 
@@ -115,7 +139,6 @@ def render_edit_card(event_name):
         </div>""",
         unsafe_allow_html=True,
     )
-
     if st.button("❌ Cancel Edit"):
         st.session_state["editing_event"] = None
         st.rerun()
@@ -130,26 +153,32 @@ def render_edit_card(event_name):
 # ─────────────────────────────────────────────
 # GANTT
 # ─────────────────────────────────────────────
-def render_gantt(df_year, year):
-    df_plot = df_year.dropna(subset=["event_start", "event_end"]).sort_values("event_start").reset_index(drop=True)
+def render_gantt(df_year, rooms_df, spaces_df, year):
+    df_plot = (
+        df_year
+        .dropna(subset=["event_start", "event_end"])
+        .sort_values("event_start")
+        .reset_index(drop=True)
+    )
     if df_plot.empty:
         st.info("Δεν υπάρχουν events με έγκυρες ημερομηνίες.")
         return
 
     fig = go.Figure()
-
     for idx, row in df_plot.iterrows():
-        color = event_color(idx)
-        start = row["event_start"]
-        end = row["event_end"]
-        days = (end - start).days or 1
+        color  = event_color(idx)
+        start  = row["event_start"]
+        end    = row["event_end"]
+        days   = (end - start).days or 1
+        eid    = row["event_id"]
 
         hover = (
             f"<b>{row['event_name']}</b><br>"
             f"📅 {start.strftime('%d/%m/%Y')} → {end.strftime('%d/%m/%Y')}<br>"
             f"🌙 {days} nights<br>"
             f"👥 {int(row.get('attendees', 0) or 0)} attendees<br>"
-            f"🛏️ {count_rooms(row)} rooms | 🏛️ {count_spaces(row)} spaces"
+            f"🛏️ {count_rooms_from_df(rooms_df, eid)} rooms | "
+            f"🏛️ {count_spaces_from_df(spaces_df, eid)} spaces"
         )
 
         fig.add_trace(go.Bar(
@@ -194,7 +223,6 @@ def render_gantt(df_year, year):
         bargap=0.35,
         title=dict(text=f"Groups & Conferences — {year}", font=dict(size=18)),
     )
-
     st.plotly_chart(fig, use_container_width=True)
 
 
@@ -209,24 +237,31 @@ def main():
     )
     st.title("📊 Groups & Conferences Dashboard")
 
-    # Init edit state
     if "editing_event" not in st.session_state:
         st.session_state["editing_event"] = None
 
     with st.spinner("Φόρτωση δεδομένων..."):
-        df = load_data()
+        data = load_data()
 
-    if df.empty:
+    events_df   = data["events"]
+    rooms_df    = data["rooms"]
+    spaces_df   = data["spaces"]
+    services_df = data["services"]
+
+    if events_df.empty:
         st.warning("Δεν υπάρχουν δεδομένα ακόμα.")
         return
 
-    available_years = sorted(df["event_start"].dropna().dt.year.unique().tolist())
+    available_years = sorted(events_df["event_start"].dropna().dt.year.unique().tolist())
     if not available_years:
         st.warning("Δεν βρέθηκαν έγκυρες ημερομηνίες.")
         return
 
-    selected_year = st.selectbox("📅 Έτος", available_years, index=len(available_years) - 1)
-    df_year = df[df["event_start"].dt.year == selected_year].copy().reset_index(drop=True)
+    selected_year = st.selectbox("📅 Έτος", available_years,
+                                 index=len(available_years) - 1)
+    df_year = events_df[
+        events_df["event_start"].dt.year == selected_year
+    ].copy().reset_index(drop=True)
 
     tab1, tab2 = st.tabs(["📋 Events", "📅 Gantt Chart"])
 
@@ -234,49 +269,59 @@ def main():
     with tab1:
         st.subheader(f"Events {selected_year}  —  {len(df_year)} total")
 
-        # Header
         hcols = st.columns([0.4, 0.2, 3, 1.5, 1.5, 1, 1.2, 1, 1])
-        for col, label in zip(hcols[2:], ["Event", "Start", "End", "Nights", "Attendees", "Rooms", "Spaces"]):
+        for col, label in zip(hcols[2:],
+                               ["Event", "Start", "End", "Nights",
+                                "Attendees", "Rooms", "Spaces"]):
             col.markdown(f"**{label}**")
         st.divider()
 
         selected_idx = None
         for i, row in df_year.iterrows():
             color = event_color(i)
-            cols = st.columns([0.4, 0.2, 3, 1.5, 1.5, 1, 1.2, 1, 1])
-            checked = cols[0].checkbox("", key=f"chk_{i}", label_visibility="collapsed")
+            eid   = row["event_id"]
+            cols  = st.columns([0.4, 0.2, 3, 1.5, 1.5, 1, 1.2, 1, 1])
+
+            checked = cols[0].checkbox("", key=f"chk_{i}",
+                                       label_visibility="collapsed")
             cols[1].markdown(
                 f'<div style="width:14px;height:14px;border-radius:50%;'
                 f'background:{color};margin-top:8px;"></div>',
                 unsafe_allow_html=True,
             )
             cols[2].markdown(f"**{row.get('event_name', '')}**")
-            cols[3].write(row["event_start"].strftime("%d/%m/%Y") if pd.notna(row["event_start"]) else "—")
-            cols[4].write(row["event_end"].strftime("%d/%m/%Y") if pd.notna(row["event_end"]) else "—")
+            cols[3].write(row["event_start"].strftime("%d/%m/%Y")
+                          if pd.notna(row["event_start"]) else "—")
+            cols[4].write(row["event_end"].strftime("%d/%m/%Y")
+                          if pd.notna(row["event_end"]) else "—")
             cols[5].write(str(num_days(row)))
             cols[6].write(str(int(row.get("attendees", 0) or 0)))
-            cols[7].write(str(count_rooms(row)))
-            cols[8].write(str(count_spaces(row)))
+            cols[7].write(str(count_rooms_from_df(rooms_df, eid)))
+            cols[8].write(str(count_spaces_from_df(spaces_df, eid)))
 
             if checked:
                 selected_idx = i
 
-        # Client card or edit form
         if selected_idx is not None:
             st.divider()
-            selected_row = df_year.loc[selected_idx]
-            color = event_color(selected_idx)
+            st.subheader("📄 Client Card")
+            selected_row  = df_year.loc[selected_idx]
+            color         = event_color(selected_idx)
+            eid           = selected_row["event_id"]
+            ev_rooms_df   = get_event_rooms(rooms_df, eid)
+            ev_spaces     = get_event_spaces(spaces_df, services_df, eid)
 
             editing = st.session_state.get("editing_event")
             if editing and editing == selected_row["event_name"]:
                 render_edit_card(editing)
             else:
-                render_client_card(selected_row, color, selected_idx)
+                render_client_card(selected_row, ev_rooms_df, ev_spaces,
+                                   color, selected_idx)
 
     # ── TAB 2 ─────────────────────────────────
     with tab2:
         st.subheader(f"Gantt Chart — {selected_year}")
-        render_gantt(df_year, selected_year)
+        render_gantt(df_year, rooms_df, spaces_df, selected_year)
 
 
 if __name__ == "__main__":
