@@ -156,7 +156,6 @@ def render_edit_card(event_name):
 # ─────────────────────────────────────────────
 def render_gantt(df_all, rooms_df, spaces_df):
     from streamlit_echarts import st_echarts
-    import calendar
 
     df_valid = df_all.dropna(subset=["event_start", "event_end"]).copy()
     if df_valid.empty:
@@ -181,111 +180,143 @@ def render_gantt(df_all, rooms_df, spaces_df):
         st.info(f"Δεν υπάρχουν events για το {selected_year}.")
         return
 
-    # ── Build data για ECharts ─────────────────
-    # Τα events ως y-axis categories (αντεστραμμένα για top-to-bottom)
+    # ── Epoch ms helpers ──────────────────────
+    def to_ms(dt):
+        return int(dt.timestamp() * 1000)
+
+    year_start_ms = to_ms(pd.Timestamp(f"{selected_year}-01-01"))
+    year_end_ms   = to_ms(pd.Timestamp(f"{selected_year}-12-31"))
+    mar_ms        = to_ms(pd.Timestamp(f"{selected_year}-03-01"))
+    oct_ms        = to_ms(pd.Timestamp(f"{selected_year}-10-31"))
+
+    # ── Gantt με δύο stacked bars ανά event ──
+    # Bar 1 (transparent): από epoch 0 μέχρι event_start  → "offset"
+    # Bar 2 (colored):     από event_start μέχρι event_end → "duration"
     event_names = df_plot["event_name"].tolist()
-    event_names_reversed = list(reversed(event_names))
 
-    series_data = []
+    offset_data   = []
+    duration_data = []
+
     for idx, row in df_plot.iterrows():
-        eid   = row["event_id"]
-        color = event_color(idx)
-        rooms  = count_rooms_from_df(rooms_df, eid)
-        spaces = count_spaces_from_df(spaces_df, eid)
+        color  = event_color(idx)
+        start  = to_ms(row["event_start"])
+        end    = to_ms(row["event_end"])
+        dur    = end - start
         nights = (row["event_end"] - row["event_start"]).days or 1
+        eid    = row["event_id"]
 
-        series_data.append({
-            "name":  row["event_name"],
-            "value": [
-                event_names_reversed.index(row["event_name"]),  # y index
-                row["event_start"].strftime("%Y-%m-%d"),
-                row["event_end"].strftime("%Y-%m-%d"),
-                row["event_name"],
-                row.get("event_type", "—"),
-                nights,
-                int(row.get("attendees", 0) or 0),
-                rooms,
-                spaces,
-            ],
-            "itemStyle": {"color": color},
+        offset_data.append({
+            "value": start,
+            "itemStyle": {"color": "transparent", "borderColor": "transparent"},
+        })
+        duration_data.append({
+            "value": dur,
+            "itemStyle": {"color": color, "borderRadius": [0, 4, 4, 0]},
+            "tooltip_extra": {
+                "name":      row["event_name"],
+                "type":      row.get("event_type", "—"),
+                "start_str": row["event_start"].strftime("%d/%m/%Y"),
+                "end_str":   row["event_end"].strftime("%d/%m/%Y"),
+                "nights":    nights,
+                "attendees": int(row.get("attendees", 0) or 0),
+                "rooms":     count_rooms_from_df(rooms_df, eid),
+                "spaces":    count_spaces_from_df(spaces_df, eid),
+            },
         })
 
-    # ── ECharts option ────────────────────────
+    # Το tooltip χρειάζεται τα δεδομένα μέσα στο value array
+    # Χρησιμοποιούμε το name field για tooltip display
+    duration_data_clean = []
+    for idx, (row_data, row) in enumerate(zip(duration_data, df_plot.itertuples())):
+        nights = (row.event_end - row.event_start).days or 1
+        eid    = row.event_id
+        duration_data_clean.append({
+            "value": row_data["value"],
+            "itemStyle": row_data["itemStyle"],
+            "name": (
+                f"{row.event_name}|"
+                f"{row.event_start.strftime('%d/%m/%Y')}|"
+                f"{row.event_end.strftime('%d/%m/%Y')}|"
+                f"{getattr(row, 'event_type', '—')}|"
+                f"{nights}|"
+                f"{int(getattr(row, 'attendees', 0) or 0)}|"
+                f"{count_rooms_from_df(rooms_df, eid)}|"
+                f"{count_spaces_from_df(spaces_df, eid)}"
+            ),
+        })
+
+    zoom_start_pct = round((mar_ms - year_start_ms) / (year_end_ms - year_start_ms) * 100)
+    zoom_end_pct   = round((oct_ms - year_start_ms) / (year_end_ms - year_start_ms) * 100)
+
     option = {
         "backgroundColor": "transparent",
         "tooltip": {
             "trigger": "item",
             "formatter": (
                 "function(params) {"
-                "  var v = params.value;"
-                "  return '<b>' + v[3] + '</b><br/>'"
-                "    + 'Τύπος: ' + v[4] + '<br/>'"
-                "    + '📅 ' + v[1] + ' → ' + v[2] + '<br/>'"
-                "    + '🌙 ' + v[5] + ' nights<br/>'"
-                "    + '👥 ' + v[6] + ' attendees<br/>'"
-                "    + '🛏️ ' + v[7] + ' rooms | 🏛️ ' + v[8] + ' spaces';"
+                "  if (params.seriesIndex === 0) return '';"  # κρύβουμε tooltip του offset
+                "  var parts = params.name.split('|');"
+                "  return '<b>' + parts[0] + '</b><br/>'"
+                "    + 'Τύπος: '  + parts[3] + '<br/>'"
+                "    + '📅 ' + parts[1] + ' → ' + parts[2] + '<br/>'"
+                "    + '🌙 ' + parts[4] + ' nights<br/>'"
+                "    + '👥 ' + parts[5] + ' attendees<br/>'"
+                "    + '🛏️ ' + parts[6] + ' rooms | 🏛️ ' + parts[7] + ' spaces';"
                 "}"
             ),
         },
         "title": {
             "text": f"Groups & Conferences — {selected_year}",
             "textStyle": {"fontSize": 18, "fontWeight": "normal"},
-            "top": 10,
-            "left": 10,
+            "top": 10, "left": 10,
         },
         "grid": {
-            "top":    60,
-            "bottom": 80,   # χώρος για dataZoom slider
-            "left":   200,  # χώρος για event names
-            "right":  20,
+            "top": 55, "bottom": 70,
+            "left": 200, "right": 20,
+            "containLabel": False,
         },
         "xAxis": {
-            "type": "time",
-            "min": f"{selected_year}-01-01",
-            "max": f"{selected_year}-12-31",
+            "type": "value",
+            "min": year_start_ms,
+            "max": year_end_ms,
             "axisLabel": {
                 "formatter": (
                     "function(val) {"
                     "  var d = new Date(val);"
                     "  var months = ['Ιαν','Φεβ','Μαρ','Απρ','Μάι','Ιουν',"
                     "               'Ιουλ','Αυγ','Σεπ','Οκτ','Νοε','Δεκ'];"
-                    # Όταν ζουμάρει φαίνονται ημέρες, αλλιώς μήνες
-                    "  if (d.getDate() === 1 || d.getDate() === 15) {"
-                    "    return d.getDate() === 1"
-                    "      ? months[d.getMonth()]"
-                    "      : d.getDate();"
-                    "  }"
+                    "  if (d.getDate() <= 3) return months[d.getMonth()];"
+                    "  if (d.getDate() >= 13 && d.getDate() <= 17) return d.getDate();"
                     "  return '';"
                     "}"
                 ),
                 "fontSize": 11,
                 "color": "#475569",
             },
-            "splitLine": {"show": True, "lineStyle": {"color": "#e2e8f0"}},
+            "splitLine": {"show": True, "lineStyle": {"color": "#e2e8f0", "type": "dashed"}},
             "axisLine":  {"lineStyle": {"color": "#cbd5e1"}},
+            "axisTick":  {"show": False},
         },
         "yAxis": {
             "type": "category",
-            "data": event_names_reversed,
+            "data": list(reversed(event_names)),
             "axisLabel": {
                 "fontSize": 12,
                 "color": "#1e293b",
-                "width": 180,
+                "width": 185,
                 "overflow": "truncate",
             },
-            "axisLine":  {"show": False},
-            "axisTick":  {"show": False},
-            "splitLine": {"show": False},
+            "axisLine": {"show": False},
+            "axisTick": {"show": False},
         },
-        # ── dataZoom: οριζόντιος slider κάτω + scroll με mouse wheel ─────
         "dataZoom": [
             {
-                "type":       "slider",   # ορατός slider κάτω από το chart
+                "type": "slider",
                 "xAxisIndex": 0,
-                "start":      16,         # ~Μάρτιος
-                "end":        84,         # ~Οκτώβριος
-                "height":     20,
-                "bottom":     15,
+                "start": zoom_start_pct,
+                "end":   zoom_end_pct,
+                "height": 20,
+                "bottom": 15,
                 "fillerColor": "rgba(148,163,184,0.2)",
                 "borderColor": "#cbd5e1",
                 "handleStyle": {"color": "#64748b"},
@@ -299,45 +330,40 @@ def render_gantt(df_all, rooms_df, spaces_df):
                 ),
             },
             {
-                "type":       "inside",   # scroll με mouse wheel
+                "type": "inside",
                 "xAxisIndex": 0,
-                "start":      16,
-                "end":        84,
-                "zoomOnMouseWheel":  True,
-                "moveOnMouseMove":   True,
-                "moveOnMouseWheel":  False,
+                "start": zoom_start_pct,
+                "end":   zoom_end_pct,
+                "zoomOnMouseWheel": True,
+                "moveOnMouseMove": True,
+                "moveOnMouseWheel": False,
             },
         ],
         "series": [
             {
-                "type": "custom",
-                "renderItem": (
-                    "function(params, api) {"
-                    "  var categoryIndex = api.value(0);"
-                    "  var start  = api.coord([api.value(1), categoryIndex]);"
-                    "  var end    = api.coord([api.value(2), categoryIndex]);"
-                    "  var height = api.size([0, 1])[1] * 0.72;"  # ύψος μπάρας (72% του row)
-                    "  var x = start[0];"
-                    "  var y = start[1] - height / 2;"
-                    "  var width = Math.max(end[0] - start[0], 2);"
-                    "  return {"
-                    "    type: 'group',"
-                    "    children: [{"
-                    "      type: 'rect',"
-                    "      shape: {x:x, y:y, width:width, height:height, r:4},"
-                    "      style: api.style(),"
-                    "    }]"
-                    "  };"
-                    "}"
-                ),
-                "encode": {"x": [1, 2], "y": 0},
-                "data":   series_data,
-            }
+                "type": "bar",
+                "stack": "gantt",
+                "barMaxWidth": 28,
+                "barCategoryGap": "10%",  # gap ανάμεσα στα events
+                "silent": True,           # δεν αλληλεπιδρά με mouse
+                "data": offset_data,
+                "emphasis": {"disabled": True},
+            },
+            {
+                "type": "bar",
+                "stack": "gantt",
+                "barMaxWidth": 28,
+                "barCategoryGap": "10%",
+                "data": duration_data_clean,
+                "emphasis": {
+                    "itemStyle": {"shadowBlur": 6, "shadowColor": "rgba(0,0,0,0.2)"}
+                },
+            },
         ],
     }
 
     chart_height = max(400, len(df_plot) * 40 + 140)
-    st_echarts(option, height=f"{chart_height}px", key=f"gantt_{selected_year}")
+    st_echarts(option, height=f"{chart_height}px", key=f"gantt_{selected_year}")  
 
 
 # ─────────────────────────────────────────────
